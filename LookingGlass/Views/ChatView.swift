@@ -73,14 +73,23 @@ class ChatViewModel: ObservableObject {
 
 struct ChatView: View {
     @StateObject private var viewModel = ChatViewModel()
+    @StateObject private var inputController = ChatInputController()
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.chatFontSize) private var fontSize
+    @Environment(\.chatLineHeight) private var lineHeight
 
     @AppStorage("selectedModel") private var selectedModel = "qwen3.5:9b"
     @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
     @AppStorage("systemPrompt") private var systemPrompt = ""
 
-    private let inputBarHeight: CGFloat = 72
+    @State private var inputHeight: CGFloat = 22
+    @State private var inputFocused = false
+
+    private var inputMinHeight: CGFloat { fontSize + 8 }
+    private var inputMaxHeight: CGFloat { (fontSize + 8) * 7 }
+    // Reserve scroll space for the whole input region (toolbar + field + padding)
+    private var inputReserve: CGFloat { inputHeight + (inputFocused ? 40 : 0) + 44 }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -118,7 +127,7 @@ struct ChatView: View {
                         ForEach(viewModel.messages) { msg in
                             MessageBubble(message: msg).id(msg.id)
                         }
-                        Color.clear.frame(height: inputBarHeight + 8).id("bottom")
+                        Color.clear.frame(height: inputReserve + 8).id("bottom")
                     }
                     .frame(maxWidth: 740)
                     .padding(.horizontal, 24)
@@ -137,35 +146,24 @@ struct ChatView: View {
     private var floatingInputBar: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
-            HStack(alignment: .bottom, spacing: 10) {
-                TextField("Message Alice…", text: $viewModel.inputText, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 15))
-                    .lineLimit(1...6)
-                    .onSubmit { submit() }
-
-                Button {
-                    if viewModel.isStreaming { viewModel.cancelStream() } else { submit() }
-                } label: {
-                    Image(systemName: viewModel.isStreaming ? "stop.circle.fill" : "arrow.up.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(viewModel.isStreaming ? Color.red : Color.accentColor)
+            VStack(spacing: 0) {
+                if inputFocused {
+                    formattingToolbar
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
-                .buttonStyle(.plain)
-                .disabled(!viewModel.isStreaming && viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                inputRow
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
             .frame(maxWidth: 740)
-            .background(
-                colorScheme == .dark
-                    ? Color.black.opacity(0.45)
-                    : Color.white.opacity(0.95)
-            )
+            // Real frosted-glass blur + a tint for contrast
+            .background {
+                ZStack {
+                    Rectangle().fill(.ultraThinMaterial)
+                    Rectangle().fill(colorScheme == .dark ? Color.black.opacity(0.35) : Color.white.opacity(0.4))
+                }
+            }
             .overlay(
-                colorScheme == .light
-                    ? RoundedRectangle(cornerRadius: 16).stroke(Color.gray.opacity(0.2), lineWidth: 1)
-                    : nil
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.15), lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .shadow(
@@ -176,5 +174,80 @@ struct ChatView: View {
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 16)
+        .animation(.easeInOut(duration: 0.16), value: inputFocused)
+    }
+
+    private var inputRow: some View {
+        HStack(alignment: .bottom, spacing: 10) {
+            ZStack(alignment: .topLeading) {
+                if viewModel.inputText.isEmpty {
+                    Text("Message Alice…   (Enter to send · Shift+Enter for newline)")
+                        .font(.system(size: fontSize, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 5)
+                        .padding(.top, 7)
+                        .allowsHitTesting(false)
+                }
+                ChatInputEditor(
+                    text: $viewModel.inputText,
+                    height: $inputHeight,
+                    fontSize: fontSize,
+                    lineHeight: lineHeight,
+                    minHeight: inputMinHeight,
+                    maxHeight: inputMaxHeight,
+                    controller: inputController,
+                    onSend: { submit() },
+                    onFocusChange: { focused in inputFocused = focused }
+                )
+                .frame(height: inputHeight)
+            }
+
+            Button {
+                if viewModel.isStreaming { viewModel.cancelStream() } else { submit() }
+            } label: {
+                Image(systemName: viewModel.isStreaming ? "stop.circle.fill" : "arrow.up.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(viewModel.isStreaming ? Color.red : Color.accentColor)
+            }
+            .buttonStyle(.plain)
+            .disabled(!viewModel.isStreaming && viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private var formattingToolbar: some View {
+        HStack(spacing: 2) {
+            FormatButton(icon: "bold", help: "Bold") { inputController.wrap(prefix: "**", suffix: "**") }
+            FormatButton(icon: "italic", help: "Italic") { inputController.wrap(prefix: "*", suffix: "*") }
+            FormatButton(icon: "chevron.left.forwardslash.chevron.right", help: "Inline code") { inputController.wrap(prefix: "`", suffix: "`") }
+            FormatButton(icon: "curlybraces", help: "Code block") { inputController.wrap(prefix: "\n```\n", suffix: "\n```\n") }
+            FormatButton(icon: "list.bullet", help: "List item") { inputController.wrap(prefix: "\n- ", suffix: "") }
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
+    }
+}
+
+struct FormatButton: View {
+    let icon: String
+    let help: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(hovering ? Color.primary : Color.secondary)
+                .frame(width: 26, height: 24)
+                .background(hovering ? Color.primary.opacity(0.1) : Color.clear)
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .onHover { hovering = $0 }
     }
 }

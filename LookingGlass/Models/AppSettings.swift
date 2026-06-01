@@ -26,14 +26,22 @@ enum BackgroundStyle: String, CaseIterable {
     }
 }
 
-// Environment key so font size flows down to all chat content
+// Environment keys so font size + line height flow down to all chat content
 struct ChatFontSizeKey: EnvironmentKey {
     static let defaultValue: Double = 14.0
+}
+
+struct ChatLineHeightKey: EnvironmentKey {
+    static let defaultValue: Double = 1.2
 }
 
 extension EnvironmentValues {
     var chatFontSize: Double {
         get { self[ChatFontSizeKey.self] }
         set { self[ChatFontSizeKey.self] = newValue }
+    }
+    var chatLineHeight: Double {
+        get { self[ChatLineHeightKey.self] }
+        set { self[ChatLineHeightKey.self] = newValue }
     }
 }

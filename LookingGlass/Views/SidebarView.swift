@@ -36,6 +36,9 @@ struct SidebarView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black.opacity(0.12), ignoresSafeAreaEdges: .all)
+        // Material gives real frosted-glass blur of whatever's behind the sidebar
+        // (withinWindow blending). A faint tint adds separation from the chat area.
+        .background(Color.black.opacity(0.10), ignoresSafeAreaEdges: .all)
+        .background(.thinMaterial, ignoresSafeAreaEdges: .all)
     }
 }

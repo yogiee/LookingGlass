@@ -4,6 +4,7 @@ import AppKit
 struct SettingsPanel: View {
     @AppStorage("colorSchemeRaw") private var colorSchemeRaw = AppColorScheme.system.rawValue
     @AppStorage("fontSize") private var fontSize = 14.0
+    @AppStorage("lineHeight") private var lineHeight = 1.2
     @AppStorage("backgroundStyle") private var backgroundStyle = BackgroundStyle.glass.rawValue
     @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
@@ -12,6 +13,7 @@ struct SettingsPanel: View {
 
     @State private var tools: [ToolInfo] = []
     @State private var loadingTools = true
+    @State private var promptExpanded = false
 
     private let client = SidecarClient()
 
@@ -61,6 +63,17 @@ struct SettingsPanel: View {
                 }
                 Slider(value: $fontSize, in: 11...22, step: 1)
             }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Line Height")
+                    Spacer()
+                    Text(String(format: "%.2f×", lineHeight))
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Slider(value: $lineHeight, in: 1.0...1.5, step: 0.05)
+            }
         }
     }
 
@@ -68,34 +81,65 @@ struct SettingsPanel: View {
 
     private var personalitySection: some View {
         Section("Personality") {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("System Prompt")
-                    .font(.system(size: 12, weight: .medium))
-                TextEditor(text: $systemPrompt)
-                    .font(.system(size: 12, design: .monospaced))
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight: 150)
-                    .padding(6)
-                    .background(Color.primary.opacity(0.05))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(alignment: .topLeading) {
-                        if systemPrompt.isEmpty {
-                            Text("Empty = the built-in default Alice.\nPaste your own prompt to make Alice yours.")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.tertiary)
-                                .padding(.top, 14)
-                                .padding(.leading, 11)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                HStack {
-                    Text("Stored locally on this Mac — never written to the repo.")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if !systemPrompt.isEmpty {
-                        Button("Reset to Default") { systemPrompt = "" }
+            // Collapsed header — tap to expand. Stays compact so the settings
+            // pane doesn't blow up once a long prompt is pasted in.
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { promptExpanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text("System Prompt")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.primary)
+                    if systemPrompt.isEmpty {
+                        Text("Default")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 11))
+                            .foregroundStyle(.green)
+                        Text("Custom · saved")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(promptExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if promptExpanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    TextEditor(text: $systemPrompt)
+                        .font(.system(size: 12, design: .monospaced))
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 180)
+                        .padding(6)
+                        .background(Color.primary.opacity(0.05))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .overlay(alignment: .topLeading) {
+                            if systemPrompt.isEmpty {
+                                Text("Empty = the built-in default Alice.\nPaste your own prompt to make Alice yours.")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.top, 14)
+                                    .padding(.leading, 11)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                    HStack {
+                        Text("Auto-saves as you type. Stored locally — never in the repo.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if !systemPrompt.isEmpty {
+                            Button("Reset to Default") { systemPrompt = "" }
+                                .font(.system(size: 11))
+                        }
                     }
                 }
             }

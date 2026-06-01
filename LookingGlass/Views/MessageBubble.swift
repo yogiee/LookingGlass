@@ -4,8 +4,12 @@ import AppKit
 struct MessageBubble: View {
     let message: Message
     @Environment(\.chatFontSize) private var fontSize
+    @Environment(\.chatLineHeight) private var lineHeight
     @State private var isHovering = false
     @State private var hideTask: Task<Void, Never>?
+
+    // SwiftUI Text has no line-height multiple; approximate via lineSpacing.
+    private var bubbleLineSpacing: CGFloat { CGFloat(fontSize * (lineHeight - 1)) }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -60,7 +64,8 @@ struct MessageBubble: View {
 
     private var userBubble: some View {
         Text(message.content)
-            .font(.system(size: fontSize))
+            .font(.system(size: fontSize, design: .monospaced))
+            .lineSpacing(bubbleLineSpacing)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(Color.accentColor.opacity(0.18))
@@ -83,7 +88,8 @@ struct MessageBubble: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14))
             } else {
                 Text(message.content)
-                    .font(.system(size: fontSize))
+                    .font(.system(size: fontSize, design: .monospaced))
+                    .lineSpacing(bubbleLineSpacing)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 16)

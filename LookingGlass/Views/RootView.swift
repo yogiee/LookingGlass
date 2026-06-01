@@ -64,6 +64,7 @@ struct RootView: View {
     @AppStorage("railSelectionRaw") private var railSelectionRaw = RailTab.chats.rawValue
     @AppStorage("colorSchemeRaw")   private var colorSchemeRaw   = AppColorScheme.system.rawValue
     @AppStorage("fontSize")         private var fontSize         = 14.0
+    @AppStorage("lineHeight")       private var lineHeight       = 1.2
     @AppStorage("backgroundStyle")  private var backgroundStyleRaw = BackgroundStyle.glass.rawValue
     @State private var sidebarVisible = true
 
@@ -144,6 +145,7 @@ struct RootView: View {
         .background(WindowChromeConfigurator(colorScheme: preferredColorScheme).frame(width: 0, height: 0))
         .preferredColorScheme(preferredColorScheme)
         .environment(\.chatFontSize, fontSize)
+        .environment(\.chatLineHeight, lineHeight)
         .task { sidecar.start() }
     }
 }
