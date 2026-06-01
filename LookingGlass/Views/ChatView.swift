@@ -6,17 +6,44 @@ class ChatViewModel: ObservableObject {
     @Published var isStreaming = false
     @Published var inputText = ""
 
+    /// The conversation currently mirrored in `messages`. Kept in sync with the
+    /// store's `activeConversationID`; `nil` = an unsaved fresh chat.
+    private(set) var loadedConversationID: UUID?
+
     private let client = SidecarClient()
     private var streamTask: Task<Void, Never>?
 
-    func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?) {
+    /// Swap the chat pane to a different conversation (or a blank one for `nil`).
+    func load(_ conversationID: UUID?, store: ConversationStore) {
+        streamTask?.cancel()
+        isStreaming = false
+        loadedConversationID = conversationID
+        messages = conversationID.map { store.loadMessages($0) } ?? []
+    }
+
+    func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?, store: ConversationStore) {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming else { return }
 
         inputText = ""
-        messages.append(Message(role: .user, content: text))
+        let userMessage = Message(role: .user, content: text)
+        messages.append(userMessage)
         messages.append(Message(role: .assistant, content: "", isStreaming: true))
         isStreaming = true
+
+        // Ensure a persisted conversation exists, then save the user's turn.
+        // Setting loadedConversationID *before* activeConversationID means the
+        // view's onChange guard treats this as "already loaded" and won't reload.
+        let conversationID: UUID
+        if let active = loadedConversationID {
+            conversationID = active
+        } else {
+            let newID = store.createConversation(title: Self.deriveTitle(text))
+            loadedConversationID = newID
+            store.activeConversationID = newID
+            conversationID = newID
+        }
+        store.appendMessage(userMessage, to: conversationID)
 
         let history = Array(messages.dropLast())
 
@@ -24,6 +51,13 @@ class ChatViewModel: ObservableObject {
             defer {
                 if let idx = messages.indices.last { messages[idx].isStreaming = false }
                 isStreaming = false
+                // Persist the completed assistant turn (content + any tool calls).
+                if let idx = messages.indices.last {
+                    let assistant = messages[idx]
+                    if !assistant.content.isEmpty || !assistant.toolCalls.isEmpty {
+                        store.appendMessage(assistant, to: conversationID)
+                    }
+                }
             }
             do {
                 for try await event in client.stream(
@@ -43,6 +77,13 @@ class ChatViewModel: ObservableObject {
                 }
             }
         }
+    }
+
+    /// Conversation title from the first user message — first line, trimmed, capped.
+    private static func deriveTitle(_ text: String) -> String {
+        let firstLine = text.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? text
+        let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? "New Chat" : String(trimmed.prefix(60))
     }
 
     private func apply(_ event: ChatEvent) {
@@ -72,6 +113,7 @@ class ChatViewModel: ObservableObject {
 }
 
 struct ChatView: View {
+    @EnvironmentObject private var store: ConversationStore
     @StateObject private var viewModel = ChatViewModel()
     @StateObject private var inputController = ChatInputController()
     @Environment(\.colorScheme) private var colorScheme
@@ -96,6 +138,13 @@ struct ChatView: View {
             messageList
             floatingInputBar
         }
+        // Sidebar selection (or New Chat) drives which conversation is shown.
+        // Guard against the self-triggered change when send() creates a new one.
+        .onChange(of: store.activeConversationID) { _, newID in
+            if newID != viewModel.loadedConversationID {
+                viewModel.load(newID, store: store)
+            }
+        }
     }
 
     private func submit() {
@@ -103,7 +152,8 @@ struct ChatView: View {
             model: selectedModel.isEmpty ? nil : selectedModel,
             ollamaHost: ollamaHost,
             enabledTools: decodedEnabledTools(),
-            systemPrompt: systemPrompt.isEmpty ? nil : systemPrompt
+            systemPrompt: systemPrompt.isEmpty ? nil : systemPrompt,
+            store: store
         )
     }
 

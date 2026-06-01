@@ -25,11 +25,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 struct LookingGlassApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var sidecar = SidecarProcess()
+    @StateObject private var store = ConversationStore()
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(sidecar)
+                .environmentObject(store)
         }
         .windowStyle(.hiddenTitleBar)
         .commands {

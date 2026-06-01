@@ -2,7 +2,7 @@ import Foundation
 
 /// A single tool invocation within an assistant turn. Created when the sidecar
 /// emits `tool_call_start` and completed when `tool_call_result` arrives.
-struct ToolCall: Identifiable, Equatable {
+struct ToolCall: Identifiable, Equatable, Codable {
     let id: String          // e.g. "tc_0_1"
     let tool: String
     var argsJSON: String    // pretty-printed arguments
