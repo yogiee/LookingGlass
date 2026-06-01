@@ -1,0 +1,247 @@
+import SwiftUI
+import AppKit
+
+struct SettingsPanel: View {
+    @AppStorage("colorSchemeRaw") private var colorSchemeRaw = AppColorScheme.system.rawValue
+    @AppStorage("fontSize") private var fontSize = 14.0
+    @AppStorage("backgroundStyle") private var backgroundStyle = BackgroundStyle.glass.rawValue
+    @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
+    @AppStorage("enabledTools") private var enabledToolsJSON = ""
+    @AppStorage("systemPrompt") private var systemPrompt = ""
+    @AppStorage("userAvatarVersion") private var userAvatarVersion = 0
+
+    @State private var tools: [ToolInfo] = []
+    @State private var loadingTools = true
+
+    private let client = SidecarClient()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            PanelHeader(title: "Settings", character: "cheshire")
+            Divider()
+            Form {
+                appearanceSection
+                personalitySection
+                connectionSection
+                toolsSection
+                profileSection
+            }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task { await loadTools() }
+    }
+
+    // MARK: Appearance
+
+    private var appearanceSection: some View {
+        Section("Appearance") {
+            Picker("Color Mode", selection: $colorSchemeRaw) {
+                ForEach(AppColorScheme.allCases, id: \.rawValue) { scheme in
+                    Text(scheme.rawValue).tag(scheme.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Picker("Background", selection: $backgroundStyle) {
+                ForEach(BackgroundStyle.allCases, id: \.rawValue) { style in
+                    Text(style.label).tag(style.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Font Size")
+                    Spacer()
+                    Text("\(Int(fontSize)) pt")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Slider(value: $fontSize, in: 11...22, step: 1)
+            }
+        }
+    }
+
+    // MARK: Personality
+
+    private var personalitySection: some View {
+        Section("Personality") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("System Prompt")
+                    .font(.system(size: 12, weight: .medium))
+                TextEditor(text: $systemPrompt)
+                    .font(.system(size: 12, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 150)
+                    .padding(6)
+                    .background(Color.primary.opacity(0.05))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(alignment: .topLeading) {
+                        if systemPrompt.isEmpty {
+                            Text("Empty = the built-in default Alice.\nPaste your own prompt to make Alice yours.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 14)
+                                .padding(.leading, 11)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                HStack {
+                    Text("Stored locally on this Mac — never written to the repo.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if !systemPrompt.isEmpty {
+                        Button("Reset to Default") { systemPrompt = "" }
+                            .font(.system(size: 11))
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Connection
+
+    private var connectionSection: some View {
+        Section("Ollama") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("API URL")
+                    .font(.system(size: 12, weight: .medium))
+                // Empty title + labelsHidden: the Form was rendering the title
+                // string as a label and auto-linkifying the URL-looking text.
+                TextField("", text: $ollamaHost, prompt: Text("http://localhost:11434"))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(maxWidth: .infinity)
+                Text("Point at a remote machine on your network to offload inference.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: Tools
+
+    private var toolsSection: some View {
+        Section("Tools") {
+            if loadingTools {
+                HStack { ProgressView().scaleEffect(0.6); Text("Loading…").foregroundStyle(.secondary) }
+            } else if tools.isEmpty {
+                Text("No tools available (sidecar offline?)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(tools) { tool in
+                    Toggle(isOn: bindingFor(tool.name)) {
+                        HStack(spacing: 6) {
+                            Text(tool.name)
+                                .font(.system(size: 12, weight: .medium))
+                            if tool.dangerous {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.orange)
+                                    .help("Can modify files or run commands on your system. Enable only if you trust the task.")
+                            }
+                        }
+                        .help(tool.description)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Profile
+
+    private var profileSection: some View {
+        Section("Profile") {
+            HStack(spacing: 12) {
+                avatarPreview
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Your Avatar")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("Shown next to your messages")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                VStack(spacing: 4) {
+                    Button("Choose…") { pickAvatar() }
+                    if AvatarStore.userAvatar(version: userAvatarVersion) != nil {
+                        Button("Remove") {
+                            AvatarStore.clearUserAvatar()
+                            userAvatarVersion &+= 1
+                        }
+                        .foregroundStyle(.red)
+                    }
+                }
+                .font(.system(size: 11))
+            }
+        }
+    }
+
+    private var avatarPreview: some View {
+        Group {
+            if let img = AvatarStore.userAvatar(version: userAvatarVersion) {
+                Image(nsImage: img).resizable().scaledToFill()
+            } else {
+                Circle().fill(Color.accentColor)
+                    .overlay(Text("Y").font(.system(size: 16, weight: .bold)).foregroundStyle(.white))
+            }
+        }
+        .frame(width: 40, height: 40)
+        .clipShape(Circle())
+    }
+
+    // MARK: Logic
+
+    private func loadTools() async {
+        loadingTools = true
+        tools = await client.fetchTools()
+        loadingTools = false
+    }
+
+    private func bindingFor(_ name: String) -> Binding<Bool> {
+        Binding(
+            get: { isEnabled(name) },
+            set: { setEnabled(name, $0) }
+        )
+    }
+
+    // nil decoded set = unconfigured = everything on
+    private func decodedSet() -> Set<String>? {
+        guard !enabledToolsJSON.isEmpty,
+              let data = enabledToolsJSON.data(using: .utf8),
+              let arr = try? JSONDecoder().decode([String].self, from: data)
+        else { return nil }
+        return Set(arr)
+    }
+
+    private func isEnabled(_ name: String) -> Bool {
+        decodedSet()?.contains(name) ?? true
+    }
+
+    private func setEnabled(_ name: String, _ on: Bool) {
+        var set = decodedSet() ?? Set(tools.map(\.name))
+        if on { set.insert(name) } else { set.remove(name) }
+        if let data = try? JSONEncoder().encode(Array(set).sorted()),
+           let json = String(data: data, encoding: .utf8) {
+            enabledToolsJSON = json
+        }
+    }
+
+    private func pickAvatar() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png, .jpeg, .image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            if AvatarStore.saveUserAvatar(from: url) {
+                userAvatarVersion &+= 1
+            }
+        }
+    }
+}

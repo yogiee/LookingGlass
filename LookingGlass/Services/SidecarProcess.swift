@@ -1,0 +1,113 @@
+import Foundation
+
+@MainActor
+class SidecarProcess: ObservableObject {
+    @Published var status: Status = .stopped
+
+    enum Status: Equatable {
+        case stopped
+        case starting
+        case running
+        case failed(String)
+    }
+
+    private var process: Process?
+    private var healthTask: Task<Void, Never>?
+    private let client = SidecarClient()
+
+    func start() {
+        guard process == nil else { return }
+        status = .starting
+
+        let sidecarDir = resolveSidecarDir()
+        let python = resolvePython(sidecarDir: sidecarDir)
+
+        guard FileManager.default.fileExists(atPath: sidecarDir + "/main.py") else {
+            status = .failed("sidecar/main.py not found at \(sidecarDir)")
+            return
+        }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: python)
+        proc.arguments = ["main.py"]
+        proc.currentDirectoryURL = URL(fileURLWithPath: sidecarDir)
+
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if let str = String(data: data, encoding: .utf8), !str.isEmpty {
+                print("[sidecar]", str, terminator: "")
+            }
+        }
+
+        proc.terminationHandler = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.process = nil
+                if self?.status == .running || self?.status == .starting {
+                    self?.status = .stopped
+                }
+            }
+        }
+
+        do {
+            try proc.run()
+            process = proc
+            pollHealthUntilReady()
+        } catch {
+            status = .failed("Launch failed: \(error.localizedDescription)")
+        }
+    }
+
+    func stop() {
+        healthTask?.cancel()
+        healthTask = nil
+        process?.terminate()
+        process = nil
+        status = .stopped
+    }
+
+    private func pollHealthUntilReady() {
+        healthTask = Task {
+            for _ in 0..<30 {
+                try? await Task.sleep(for: .seconds(1))
+                if Task.isCancelled { return }
+                if await client.health() {
+                    status = .running
+                    return
+                }
+            }
+            status = .failed("Sidecar did not become healthy after 30s")
+        }
+    }
+
+    private func resolveSidecarDir() -> String {
+        // During development: Xcode scheme sets working dir to $(SRCROOT)
+        let cwd = FileManager.default.currentDirectoryPath
+        let cwdCandidate = cwd + "/sidecar"
+        if FileManager.default.fileExists(atPath: cwdCandidate + "/main.py") {
+            return cwdCandidate
+        }
+        // Fallback: adjacent to the .app bundle
+        let bundleAdjacentCandidate = Bundle.main.bundleURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("sidecar")
+            .path
+        return bundleAdjacentCandidate
+    }
+
+    private func resolvePython(sidecarDir: String) -> String {
+        // Prefer virtual environment
+        let venvPython = sidecarDir + "/.venv/bin/python3"
+        if FileManager.default.fileExists(atPath: venvPython) {
+            return venvPython
+        }
+        // Apple Silicon Homebrew
+        let brewPython = "/opt/homebrew/bin/python3"
+        if FileManager.default.fileExists(atPath: brewPython) {
+            return brewPython
+        }
+        return "/usr/bin/python3"
+    }
+}

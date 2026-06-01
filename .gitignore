@@ -1,0 +1,29 @@
+# Swift / SPM
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj/xcuserdata/
+
+# Python sidecar
+sidecar/.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# Personal / local-only (never commit)
+# WORKSPACE holds private design docs, the calibrated Alice prompt, and design
+# handoffs — all local-only. The shipped app needs none of it (the generic
+# prompt lives in sidecar/prompts/alice.md; runtime images in LookingGlass/Resources).
+WORKSPACE/
+
+# Claude Code — local working docs and settings
+.claude/settings.local.json
+CLAUDE.md
+
+# Logs / build output
+*.log
+build/
+dist/

@@ -1,0 +1,12 @@
+[model]
+default = "qwen3.5:9b"
+ollama_host = "http://localhost:11434"
+think = false
+
+[server]
+port = 8765
+host = "127.0.0.1"
+
+[agent]
+system_prompt_path = "prompts/alice.md"
+max_turns = 10
