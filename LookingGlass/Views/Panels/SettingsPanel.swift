@@ -27,6 +27,7 @@ struct SettingsPanel: View {
                 connectionSection
                 toolsSection
                 profileSection
+                updatesSection
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
@@ -73,6 +74,27 @@ struct SettingsPanel: View {
                         .monospacedDigit()
                 }
                 Slider(value: $lineHeight, in: 1.0...1.5, step: 0.05)
+            }
+        }
+    }
+
+    // MARK: Updates (only in the shipped .app)
+
+    @ViewBuilder
+    private var updatesSection: some View {
+        if AppEnvironment.isBundledApp {
+            Section("Updates") {
+                Picker("Check for Updates", selection: Binding(
+                    get: { UpdaterService.shared.updateCheckSchedule },
+                    set: { UpdaterService.shared.updateCheckSchedule = $0 }
+                )) {
+                    ForEach(UpdateCheckSchedule.allCases, id: \.rawValue) { schedule in
+                        Text(schedule.displayName).tag(schedule)
+                    }
+                }
+                Button("Check for Updates…") {
+                    UpdaterService.shared.checkForUpdates()
+                }
             }
         }
     }

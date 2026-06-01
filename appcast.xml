@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Looking Glass</title>
+    <link>https://raw.githubusercontent.com/yogiee/LookingGlass/main/appcast.xml</link>
+    <description>Looking Glass — local AI research companion. Update feed.</description>
+    <language>en</language>
+    <item>
+      <title>0.1.0</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.1.0</h3>
+        <p>First release. Native SwiftUI chat with Alice, running locally on Ollama.</p>
+        <ul>
+          <li>Streaming chat with a glass UI (rail + collapsible sidebar, light/dark, Wonderland theme)</li>
+          <li>9 built-in tools: file ops, shell, web search, calculator, pdf extract, and more</li>
+          <li>Multi-turn agent loop with inline tool-call cards</li>
+          <li>Markdown rendering, monospace fonts, adjustable line height</li>
+          <li>Configurable Ollama URL, per-tool toggles, custom avatar, editable system prompt</li>
+        </ul>
+        <p>Requires Ollama and Homebrew Python on the host.</p>
+      ]]></description>
+      <pubDate>Tue, 02 Jun 2026 01:24:45 +0530</pubDate>
+      <sparkle:version>1</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.1.0/LookingGlass.dmg"
+        sparkle:edSignature="Y/DZHUCXz7fPHhhYW39MC01EOxl5qveyQmhrjy9spr9wY+TsU5H6kUBvDr+phVj10P8jcIq+QdyhzuFB2mKvAg=="
+        length="35433495"
+        type="application/octet-stream" />
+    </item>
+  </channel>
+</rss>

@@ -83,18 +83,24 @@ class SidecarProcess: ObservableObject {
     }
 
     private func resolveSidecarDir() -> String {
-        // During development: Xcode scheme sets working dir to $(SRCROOT)
+        // 1. Shipped .app: sidecar is embedded at Contents/Resources/sidecar
+        if let resourcePath = Bundle.main.resourcePath {
+            let bundled = resourcePath + "/sidecar"
+            if FileManager.default.fileExists(atPath: bundled + "/main.py") {
+                return bundled
+            }
+        }
+        // 2. Development (`swift run`): working dir is the project root
         let cwd = FileManager.default.currentDirectoryPath
         let cwdCandidate = cwd + "/sidecar"
         if FileManager.default.fileExists(atPath: cwdCandidate + "/main.py") {
             return cwdCandidate
         }
-        // Fallback: adjacent to the .app bundle
-        let bundleAdjacentCandidate = Bundle.main.bundleURL
+        // 3. Fallback: adjacent to the .app bundle
+        return Bundle.main.bundleURL
             .deletingLastPathComponent()
             .appendingPathComponent("sidecar")
             .path
-        return bundleAdjacentCandidate
     }
 
     private func resolvePython(sidecarDir: String) -> String {

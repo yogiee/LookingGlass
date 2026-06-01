@@ -10,6 +10,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let icon = Asset.nsImage("appicon") {
             NSApp.applicationIconImage = icon
         }
+        // Start Sparkle only when running as a real .app (it needs the feed URL).
+        if AppEnvironment.isBundledApp {
+            _ = UpdaterService.shared
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -30,6 +34,13 @@ struct LookingGlassApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .appInfo) {
+                if AppEnvironment.isBundledApp {
+                    Button("Check for Updates…") {
+                        UpdaterService.shared.checkForUpdates()
+                    }
+                }
+            }
         }
         .defaultSize(width: 960, height: 680)
     }
