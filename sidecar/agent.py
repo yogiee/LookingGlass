@@ -6,7 +6,13 @@ from typing import AsyncIterator
 
 import httpx
 
-from project import load_project, project_context, project_default_model, read_guidelines
+from project import (
+    load_project,
+    project_context,
+    project_default_model,
+    read_guidelines,
+    read_memory_index,
+)
 from tools.context import (
     reset_project_dir,
     reset_working_dir,
@@ -77,6 +83,15 @@ async def chat_stream(
         ctx = project_context(project_cfg, str(work_path))
         if ctx:
             parts.append(ctx)
+        # Passive recall: Alice always sees WHAT she's remembered (index only);
+        # she pulls full bodies on demand via the recall_memory tool.
+        mem_index = read_memory_index(project_dir)
+        if mem_index:
+            parts.append(
+                "## Remembered notes (this project)\n"
+                "You saved these notes in earlier conversations. Call `recall_memory` "
+                "with a topic to read any of them in full.\n\n" + mem_index
+            )
     guidelines = read_guidelines(project_dir)
     if guidelines:
         parts.append(guidelines)
@@ -90,6 +105,7 @@ async def chat_stream(
 
     total_in = 0
     total_out = 0
+    streamed_content = False   # have we emitted any text in a prior turn?
 
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
@@ -108,6 +124,7 @@ async def chat_stream(
 
                 assistant_content = ""
                 tool_calls: list[dict] = []
+                turn_emitted = False   # has THIS turn emitted text yet?
 
                 try:
                     async with client.stream("POST", f"{host}/api/chat", json=payload) as response:
@@ -133,6 +150,13 @@ async def chat_stream(
                             msg = data.get("message", {})
                             content = msg.get("content", "")
                             if content:
+                                # Separate a new turn's text from the previous turn's
+                                # so post-tool narration doesn't run together (e.g.
+                                # "…for.Hmm" or "…names:Yes").
+                                if streamed_content and not turn_emitted:
+                                    yield {"type": "content_delta", "text": "\n\n"}
+                                turn_emitted = True
+                                streamed_content = True
                                 assistant_content += content
                                 yield {"type": "content_delta", "text": content}
 
