@@ -55,6 +55,24 @@ def project_context(project_cfg: dict | None, working_dir: str) -> str | None:
     return "\n".join(lines)
 
 
+def read_memory_index(project_dir: str | None) -> str | None:
+    """The memory-bank index entry lines (`- [Title](slug.md) — desc`) from
+    `<project_dir>/memory-bank/MEMORY.md`, or None if there are no saved memories.
+    Injected into the prompt so Alice is passively aware of what she's remembered;
+    full bodies are pulled on demand via the recall_memory tool."""
+    if not project_dir:
+        return None
+    index = Path(project_dir).expanduser() / "memory-bank" / "MEMORY.md"
+    if not index.is_file():
+        return None
+    try:
+        entries = [ln for ln in index.read_text(encoding="utf-8").splitlines()
+                   if ln.lstrip().startswith("- [")]
+    except Exception:
+        return None
+    return "\n".join(entries) if entries else None
+
+
 def read_guidelines(project_dir: str | None) -> str | None:
     """`<project_dir>/guidelines.md` contents (trimmed), or None."""
     if not project_dir:

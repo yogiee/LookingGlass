@@ -91,6 +91,42 @@ def save_memory_entry(title: str, content: str, description: str | None = None,
     return ok(f"Saved memory '{title}' → memory-bank/{slug}.md")
 
 
+def recall_memory_entry(query: str | None = None) -> dict:
+    """List saved memories (no query) or return matching ones in full (query).
+    Case-insensitive match on filename + body. Returns ok()/err()."""
+    bank = _memory_bank()
+    if bank is None:
+        return err("recall_memory only works inside a project — open or create a project first.")
+    if not bank.is_dir():
+        return ok("No memories have been saved in this project yet.")
+
+    mem_files = sorted(f for f in bank.glob("*.md") if f.name != "MEMORY.md")
+    if not mem_files:
+        return ok("No memories have been saved in this project yet.")
+
+    q = (query or "").strip().lower()
+    if not q:
+        index = bank / "MEMORY.md"
+        if index.is_file():
+            return ok(index.read_text(encoding="utf-8").strip())
+        return ok("Saved memories:\n" + "\n".join(f"- {f.stem}" for f in mem_files))
+
+    hits: list[tuple[str, str]] = []
+    for f in mem_files:
+        try:
+            text = f.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if q in f.stem.lower() or q in text.lower():
+            hits.append((f.name, text.strip()))
+
+    if not hits:
+        return ok(f"No saved memories match '{query}'.")
+    chunks = [f"### {name}\n{text}" for name, text in hits[:5]]
+    more = "" if len(hits) <= 5 else f"\n\n(+{len(hits) - 5} more matches — refine the query.)"
+    return ok("\n\n".join(chunks) + more)
+
+
 async def _save_memory(args: dict) -> dict:
     return save_memory_entry(
         title=args.get("title"),
@@ -98,6 +134,10 @@ async def _save_memory(args: dict) -> dict:
         description=args.get("description"),
         mem_type=args.get("type", "project"),
     )
+
+
+async def _recall_memory(args: dict) -> dict:
+    return recall_memory_entry(query=args.get("query"))
 
 
 TOOLS = [
@@ -120,6 +160,23 @@ TOOLS = [
             "required": ["title", "content"],
         },
         handler=_save_memory,
+        category="memory",
+    ),
+    Tool(
+        name="recall_memory",
+        description=(
+            "Recall notes you previously saved in this project's memory-bank. Call with a "
+            "topic/keyword to read matching memories in full; call with no query to list "
+            "everything saved. Only works inside a project. Use it when the user refers to "
+            "something from a past conversation, or when earlier context would help."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Topic or keyword to search saved memories; omit to list all"},
+            },
+        },
+        handler=_recall_memory,
         category="memory",
     ),
 ]

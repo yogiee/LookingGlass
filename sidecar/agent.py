@@ -6,7 +6,13 @@ from typing import AsyncIterator
 
 import httpx
 
-from project import load_project, project_context, project_default_model, read_guidelines
+from project import (
+    load_project,
+    project_context,
+    project_default_model,
+    read_guidelines,
+    read_memory_index,
+)
 from tools.context import (
     reset_project_dir,
     reset_working_dir,
@@ -77,6 +83,15 @@ async def chat_stream(
         ctx = project_context(project_cfg, str(work_path))
         if ctx:
             parts.append(ctx)
+        # Passive recall: Alice always sees WHAT she's remembered (index only);
+        # she pulls full bodies on demand via the recall_memory tool.
+        mem_index = read_memory_index(project_dir)
+        if mem_index:
+            parts.append(
+                "## Remembered notes (this project)\n"
+                "You saved these notes in earlier conversations. Call `recall_memory` "
+                "with a topic to read any of them in full.\n\n" + mem_index
+            )
     guidelines = read_guidelines(project_dir)
     if guidelines:
         parts.append(guidelines)
