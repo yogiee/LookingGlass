@@ -7,7 +7,12 @@ from typing import AsyncIterator
 import httpx
 
 from project import load_project, project_context, project_default_model, read_guidelines
-from tools.context import reset_working_dir, set_working_dir
+from tools.context import (
+    reset_project_dir,
+    reset_working_dir,
+    set_project_dir,
+    set_working_dir,
+)
 from tools.registry import ToolRegistry
 
 
@@ -78,6 +83,7 @@ async def chat_stream(
     active_prompt = "\n\n---\n\n".join(parts)
 
     wd_token = set_working_dir(work_path)
+    pd_token = set_project_dir(Path(project_dir).expanduser() if project_dir else None)
 
     full: list[dict] = [{"role": "system", "content": active_prompt}] + messages
     tool_schemas = registry.ollama_schemas(enabled_tools)
@@ -205,6 +211,7 @@ async def chat_stream(
             }
     finally:
         reset_working_dir(wd_token)
+        reset_project_dir(pd_token)
 
 
 def _coerce_args(raw) -> dict:

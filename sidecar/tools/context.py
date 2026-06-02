@@ -16,6 +16,14 @@ _working_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "working_dir", default=None
 )
 
+# The project folder for this request, or None for an independent chat. Distinct
+# from working_dir: the latter is the tool *output scope* (and can be overridden);
+# project_dir identifies project membership and anchors the memory-bank, which
+# always belongs to the project itself.
+_project_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "project_dir", default=None
+)
+
 
 def set_working_dir(path: Path):
     """Set the request's working dir; returns a token to reset() with."""
@@ -29,3 +37,17 @@ def reset_working_dir(token) -> None:
 def working_dir() -> Path | None:
     """The active request's working dir, or None outside a chat request."""
     return _working_dir.get()
+
+
+def set_project_dir(path: Path | None):
+    """Set the request's project dir (None for independent chats)."""
+    return _project_dir.set(path)
+
+
+def reset_project_dir(token) -> None:
+    _project_dir.reset(token)
+
+
+def project_dir() -> Path | None:
+    """The active request's project folder, or None outside a project chat."""
+    return _project_dir.get()
