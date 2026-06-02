@@ -15,9 +15,20 @@ class SidecarProcess: ObservableObject {
     private var healthTask: Task<Void, Never>?
     private let client = SidecarClient()
 
+    /// Must match config.toml [server].port and SidecarClient's baseURL.
+    private let port = 8765
+
     func start() {
         guard process == nil else { return }
         status = .starting
+
+        // A sidecar we spawned can outlive its app (crash / force-quit), get
+        // reparented to launchd, and keep LISTENing on our port. The next launch
+        // then fails to bind and — because /health still answers via the orphan —
+        // would silently talk to OLDER code. Reap any stale sidecar holding the
+        // port first. We only ever kill a process whose command is our own
+        // `main.py`, so an unrelated process on the port is left untouched.
+        reapStaleSidecar()
 
         let sidecarDir = resolveSidecarDir()
         let python = resolvePython(sidecarDir: sidecarDir)
@@ -91,6 +102,52 @@ class SidecarProcess: ObservableObject {
             }
         }
         status = .stopped
+    }
+
+    /// Terminate any LookingGlass sidecar already LISTENing on our port (a stale
+    /// orphan from a prior crash/force-quit). SIGTERM, brief wait, then SIGKILL.
+    private func reapStaleSidecar() {
+        let stale = sidecarPIDsOnPort()
+        guard !stale.isEmpty else { return }
+        print("[sidecar] Reaping stale sidecar(s) on port \(port): \(stale)")
+        for pid in stale { kill(pid, SIGTERM) }
+        let deadline = Date().addingTimeInterval(2.0)
+        while !sidecarPIDsOnPort().isEmpty && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        for pid in sidecarPIDsOnPort() { kill(pid, SIGKILL) }
+    }
+
+    /// PIDs LISTENing on `port` whose command is our sidecar (`main.py`). The
+    /// command check ensures we never kill an unrelated process that happens to
+    /// hold the port.
+    private func sidecarPIDsOnPort() -> [pid_t] {
+        let listing = runCapturing("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"])
+        let pids = listing.split(whereSeparator: \.isNewline)
+            .compactMap { pid_t($0.trimmingCharacters(in: .whitespaces)) }
+        return pids.filter { pid in
+            runCapturing("/bin/ps", ["-o", "command=", "-p", "\(pid)"]).contains("main.py")
+        }
+    }
+
+    /// Run a short-lived tool and capture its stdout. Used only for small outputs
+    /// (lsof/ps), so reading after exit can't deadlock the pipe.
+    private func runCapturing(_ launchPath: String, _ args: [String]) -> String {
+        guard FileManager.default.isExecutableFile(atPath: launchPath) else { return "" }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: launchPath)
+        proc.arguments = args
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            return ""
+        }
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     private func pollHealthUntilReady() {
