@@ -91,9 +91,31 @@ def save_memory_entry(title: str, content: str, description: str | None = None,
     return ok(f"Saved memory '{title}' → memory-bank/{slug}.md")
 
 
+def _tokenize(s: str) -> list[str]:
+    """Words ≥3 chars, lowercased — for lenient keyword matching."""
+    return [t for t in re.split(r"[^a-z0-9]+", s.lower()) if len(t) >= 3]
+
+
+def _memory_listing(bank: Path) -> str:
+    """The MEMORY.md index if present, else a generated title list."""
+    index = bank / "MEMORY.md"
+    if index.is_file():
+        text = index.read_text(encoding="utf-8").strip()
+        if text:
+            return text
+    files = sorted(f for f in bank.glob("*.md") if f.name != "MEMORY.md")
+    return "Saved memories:\n" + "\n".join(f"- {f.stem}" for f in files)
+
+
 def recall_memory_entry(query: str | None = None) -> dict:
     """List saved memories (no query) or return matching ones in full (query).
-    Case-insensitive match on filename + body. Returns ok()/err()."""
+
+    Matching is **token-based, not literal-substring**: the query is split into
+    words and a memory scores by how many of them appear in its filename + body
+    (with a bonus for a full-phrase hit), results ranked by score. A naive
+    `phrase in text` check almost never matches a natural question, which is what
+    made recall flail. If nothing scores, we **return the index instead of a dead
+    end**, so Alice can always answer from the list of titles."""
     bank = _memory_bank()
     if bank is None:
         return err("recall_memory only works inside a project — open or create a project first.")
@@ -104,26 +126,32 @@ def recall_memory_entry(query: str | None = None) -> dict:
     if not mem_files:
         return ok("No memories have been saved in this project yet.")
 
-    q = (query or "").strip().lower()
+    q = (query or "").strip()
     if not q:
-        index = bank / "MEMORY.md"
-        if index.is_file():
-            return ok(index.read_text(encoding="utf-8").strip())
-        return ok("Saved memories:\n" + "\n".join(f"- {f.stem}" for f in mem_files))
+        return ok(_memory_listing(bank))
 
-    hits: list[tuple[str, str]] = []
+    tokens = _tokenize(q)
+    scored: list[tuple[int, str, str]] = []
     for f in mem_files:
         try:
             text = f.read_text(encoding="utf-8")
         except Exception:
             continue
-        if q in f.stem.lower() or q in text.lower():
-            hits.append((f.name, text.strip()))
+        hay = (f.stem + " " + text).lower()
+        score = sum(1 for t in tokens if t in hay)
+        if q.lower() in text.lower():        # full-phrase bonus
+            score += len(tokens) or 1
+        if score > 0:
+            scored.append((score, f.name, text.strip()))
 
-    if not hits:
-        return ok(f"No saved memories match '{query}'.")
-    chunks = [f"### {name}\n{text}" for name, text in hits[:5]]
-    more = "" if len(hits) <= 5 else f"\n\n(+{len(hits) - 5} more matches — refine the query.)"
+    if not scored:
+        # Never dead-end: show what's saved so Alice can still answer from the index.
+        return ok(f"No memory directly matched \"{query}\". Everything saved in this "
+                  f"project:\n\n{_memory_listing(bank)}")
+
+    scored.sort(key=lambda x: -x[0])
+    chunks = [f"### {name}\n{text}" for _, name, text in scored[:5]]
+    more = "" if len(scored) <= 5 else f"\n\n(+{len(scored) - 5} more — refine the query.)"
     return ok("\n\n".join(chunks) + more)
 
 
