@@ -232,7 +232,7 @@ struct ChatView: View {
             ZStack(alignment: .topLeading) {
                 if viewModel.inputText.isEmpty {
                     Text("Message Alice…   (Enter to send · Shift+Enter for newline)")
-                        .font(.system(size: fontSize, design: .monospaced))
+                        .font(.chatProse(fontSize))
                         .foregroundStyle(.tertiary)
                         .padding(.leading, 5)
                         .padding(.top, 7)

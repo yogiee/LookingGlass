@@ -119,6 +119,22 @@ final class ConversationStore: ObservableObject {
         reload()
     }
 
+    /// Give a conversation a custom title. No-op on empty/whitespace input so a
+    /// chat never ends up nameless; capped to keep the sidebar tidy.
+    func rename(_ conversationID: UUID, to title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try dbQueue.write { db in
+                try db.execute(sql: "UPDATE conversations SET title = ? WHERE id = ?",
+                               arguments: [String(trimmed.prefix(120)), conversationID.uuidString])
+            }
+        } catch {
+            print("[store] rename failed: \(error)")
+        }
+        reload()
+    }
+
     /// Move a conversation into a project (or back to independent with nil).
     func moveConversation(_ conversationID: UUID, toProject projectID: UUID?) {
         do {

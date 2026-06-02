@@ -12,12 +12,13 @@ struct MessageBubble: View {
     // SwiftUI Text has no line-height multiple; approximate via lineSpacing.
     private var bubbleLineSpacing: CGFloat { CGFloat(fontSize * (lineHeight - 1)) }
 
-    // Monospaced markdown theme tracking the user's font-size + line-height.
+    // Chat prose in Roboto Mono (readable, less "terminal"); code stays in the
+    // system monospace on purpose. Tracks the user's font-size + line-height.
     private var chatTheme: Theme {
         Theme()
             .text {
                 ForegroundColor(.primary)
-                FontFamilyVariant(.monospaced)
+                FontFamily(.custom(ChatFont.family))
                 FontSize(CGFloat(fontSize))
             }
             .code {
@@ -108,8 +109,18 @@ struct MessageBubble: View {
             .textSelection(.enabled)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(Color.accentColor.opacity(0.18))
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.22))
+            )
+            // Accent ring + soft shadow so the user turn reads as a raised card,
+            // matching Alice's elevated bubble (same elevation system, accent hue).
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.accentColor.opacity(0.40), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .shadow(color: .black.opacity(0.18), radius: 3, x: 0, y: 1)
     }
 
     private var assistantBubble: some View {
@@ -118,33 +129,30 @@ struct MessageBubble: View {
                 HStack(spacing: 6) {
                     ProgressView().scaleEffect(0.7)
                     Text("Thinking…")
-                        .font(.system(size: fontSize))
+                        .font(.chatProse(fontSize))
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 13)
-                .background(Color(.controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .elevatedSurface(cornerRadius: 14)
             } else if message.isStreaming {
                 // Plain text while streaming — markdown is parsed once on completion
                 // to avoid re-parsing partial/unclosed syntax on every token.
                 Text(message.content)
-                    .font(.system(size: fontSize, design: .monospaced))
+                    .font(.chatProse(fontSize))
                     .lineSpacing(bubbleLineSpacing)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 13)
-                    .background(Color(.controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .elevatedSurface(cornerRadius: 14)
             } else {
                 Markdown(message.content)
                     .markdownTheme(chatTheme)
                     .textSelection(.enabled)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 13)
-                    .background(Color(.controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .elevatedSurface(cornerRadius: 14)
             }
         }
     }

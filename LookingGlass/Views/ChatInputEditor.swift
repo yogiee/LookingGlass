@@ -106,7 +106,7 @@ struct ChatInputEditor: NSViewRepresentable {
         let para = NSMutableParagraphStyle()
         para.lineHeightMultiple = lineHeight
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular),
+            .font: ChatFont.ns(size: fontSize),
             .paragraphStyle: para,
             .foregroundColor: NSColor.labelColor,
         ]

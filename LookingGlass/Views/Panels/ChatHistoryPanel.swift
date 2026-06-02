@@ -4,6 +4,11 @@ struct ChatHistoryPanel: View {
     @EnvironmentObject private var store: ConversationStore
     @State private var showingNewProject = false
 
+    /// Inline-rename state: which row is being edited and its working title.
+    @State private var editingID: UUID?
+    @State private var draftTitle = ""
+    @FocusState private var renameFocused: Bool
+
     private var inProjectView: Bool { store.activeProjectID != nil }
 
     var body: some View {
@@ -23,6 +28,11 @@ struct ChatHistoryPanel: View {
                 store.createProject(name: name, description: description,
                                     folderURL: folder, guidelines: guidelines)
             }
+        }
+        // Clicking away from an open rename field commits it (Enter/Esc are
+        // handled in the row and clear editingID first, so this won't double-fire).
+        .onChange(of: renameFocused) { _, focused in
+            if !focused, editingID != nil { commitRename() }
         }
     }
 
@@ -99,8 +109,7 @@ struct ChatHistoryPanel: View {
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 10)
-        .background(Color.primary.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .insetField(cornerRadius: 8)
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
     }
@@ -133,10 +142,19 @@ struct ChatHistoryPanel: View {
                             title: item.title.isEmpty ? "Untitled" : item.title,
                             preview: item.preview.isEmpty ? "No messages yet" : item.preview,
                             time: Self.relativeTime(item.updatedAt),
-                            isActive: item.id == store.activeConversationID
+                            isActive: item.id == store.activeConversationID,
+                            isEditing: editingID == item.id,
+                            draftTitle: $draftTitle,
+                            renameFocused: $renameFocused,
+                            onCommitRename: commitRename,
+                            onCancelRename: cancelRename,
+                            onRename: { beginRename(item) },
+                            onDelete: { store.delete(item.id) }
                         )
                         .contentShape(Rectangle())
-                        .onTapGesture { store.activeConversationID = item.id }
+                        .onTapGesture {
+                            if editingID != item.id { store.activeConversationID = item.id }
+                        }
                         .contextMenu { chatContextMenu(item) }
                     }
                 }
@@ -146,6 +164,7 @@ struct ChatHistoryPanel: View {
 
     @ViewBuilder
     private func chatContextMenu(_ item: ConversationListItem) -> some View {
+        Button("Rename") { beginRename(item) }
         if inProjectView {
             Button("Remove from Project") {
                 store.moveConversation(item.id, toProject: nil)
@@ -159,7 +178,27 @@ struct ChatHistoryPanel: View {
                 }
             }
         }
+        Divider()
         Button("Delete", role: .destructive) { store.delete(item.id) }
+    }
+
+    // MARK: Inline rename
+
+    private func beginRename(_ item: ConversationListItem) {
+        draftTitle = item.title
+        editingID = item.id
+        // Defer focus until the TextField exists in the hierarchy.
+        DispatchQueue.main.async { renameFocused = true }
+    }
+
+    private func commitRename() {
+        guard let id = editingID else { return }
+        store.rename(id, to: draftTitle)   // no-op on blank → keeps prior title
+        editingID = nil
+    }
+
+    private func cancelRename() {
+        editingID = nil
     }
 
     private func sectionLabel(_ text: String) -> some View {
@@ -212,6 +251,7 @@ struct ChatHistoryPanel: View {
 
 struct ProjectRow: View {
     let project: ProjectListItem
+    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -237,7 +277,14 @@ struct ProjectRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(hovering ? Color.primary.opacity(0.06) : Color.clear)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+        }
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
     }
 }
 
@@ -246,6 +293,15 @@ struct ChatHistoryRow: View {
     let preview: String
     let time: String
     let isActive: Bool
+    let isEditing: Bool
+    @Binding var draftTitle: String
+    var renameFocused: FocusState<Bool>.Binding
+    let onCommitRename: () -> Void
+    let onCancelRename: () -> Void
+    let onRename: () -> Void
+    let onDelete: () -> Void
+
+    @State private var hovering = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -255,9 +311,18 @@ struct ChatHistoryRow: View {
                 .padding(.top, 5)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
+                if isEditing {
+                    TextField("Name this chat", text: $draftTitle)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13, weight: .medium))
+                        .focused(renameFocused)
+                        .onSubmit(onCommitRename)
+                        .onExitCommand(perform: onCancelRename)   // Esc
+                } else {
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium))
+                        .lineLimit(1)
+                }
                 Text(preview)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
@@ -266,13 +331,52 @@ struct ChatHistoryRow: View {
 
             Spacer()
 
-            Text(time)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            // Time by default; hover swaps in rename/delete actions. Hidden while
+            // editing so the field has room.
+            if !isEditing {
+                if hovering {
+                    HStack(spacing: 10) {
+                        actionButton("pencil", help: "Rename", action: onRename)
+                        actionButton("trash", help: "Delete", action: onDelete)
+                    }
+                } else {
+                    Text(time)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 13)
-        .background(isActive ? Color.accentColor.opacity(0.08) : Color.clear)
+        // Inset rounded highlight: accent fill + ring when selected, a light
+        // wash on hover. Gives each row a clear card-like footprint instead of
+        // dissolving into the panel.
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(rowFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(isActive ? Color.accentColor.opacity(0.45) : Color.clear, lineWidth: 1)
+                )
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+        }
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+
+    private var rowFill: Color {
+        if isActive { return Color.accentColor.opacity(0.18) }
+        if hovering { return Color.primary.opacity(0.06) }
+        return .clear
+    }
+
+    private func actionButton(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName).font(.system(size: 12))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help(help)
     }
 }

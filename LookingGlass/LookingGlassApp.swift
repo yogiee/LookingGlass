@@ -3,6 +3,9 @@ import AppKit
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Register Roboto Mono before any view renders so the chat voice picks
+        // it up on first paint.
+        ChatFont.registerBundled()
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         // `swift run` produces a bare executable (no .app bundle / Info.plist),
