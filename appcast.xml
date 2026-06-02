@@ -6,6 +6,29 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.2.0</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.2.0</h3>
+        <ul>
+          <li>Persistence &amp; Projects: conversation history (SQLite + full-text search), folder-bound Projects, rename/delete chats</li>
+          <li>Selectable chat font with sans + monospace pairing (Settings → Appearance → Chat Font)</li>
+          <li>GitHub-flavored markdown rendering — headings, blockquotes, tables, task lists</li>
+          <li>New app icon; contrast/elevation polish across bubbles, cards, and the sidebar</li>
+          <li>⌘, opens Settings</li>
+        </ul>
+        <p>Requires Ollama and Homebrew Python on the host.</p>
+      ]]></description>
+      <pubDate>Tue, 02 Jun 2026 19:04:22 +0530</pubDate>
+      <sparkle:version>2</sparkle:version>
+      <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.2.0/LookingGlass.dmg"
+        sparkle:edSignature="bm1qvIoBk0jLMRnw/aWh3qdWKRvqET42MlMEPXWoyumzxQtj215OTptohcw18U5RVF2ZgTWcg4xPFF5nQCdFAQ=="
+        length="38408363"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.1.0</title>
       <description><![CDATA[
         <h3>Looking Glass 0.1.0</h3>
