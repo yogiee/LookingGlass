@@ -6,6 +6,30 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.3.0</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.3.0</h3>
+        <p>Projects are now a real working surface — Alice understands the folder she's in, and remembers across conversations.</p>
+        <ul>
+          <li>Project awareness: in a project, Alice knows its name, description, and folder, and scopes file/shell tools to it</li>
+          <li>Memory: save notes to a project's memory-bank — conversationally ("remember that…") or with a per-message "Save to memory" button — and recall them in later chats</li>
+          <li>Per-project default model and an "Auto" model picker</li>
+          <li>Sidecar lifecycle: clean shutdown on quit, stale-process cleanup on launch, and a keep_alive setting so models free memory on their own</li>
+          <li>Polish: right-aligned message actions, clearer Ollama error messages</li>
+        </ul>
+        <p>Requires Ollama and Homebrew Python on the host.</p>
+      ]]></description>
+      <pubDate>Wed, 03 Jun 2026 03:02:56 +0530</pubDate>
+      <sparkle:version>3</sparkle:version>
+      <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.3.0/LookingGlass.dmg"
+        sparkle:edSignature="rapWrGHs0IvSkjAu/UtZ0mY7dagoV22/u+h6bpeB8NpZ+2N5c3tFfjKhzPHeJZ4tXlUVHNxEAQLT7VVoyQBkDw=="
+        length="38436926"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.2.0</title>
       <description><![CDATA[
         <h3>Looking Glass 0.2.0</h3>
