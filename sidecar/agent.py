@@ -18,6 +18,7 @@ class AgentConfig:
     system_prompt: str
     think: bool = False
     max_turns: int = 10
+    keep_alive: str = "5m"
 
 
 async def chat_stream(
@@ -80,6 +81,9 @@ async def chat_stream(
                     "messages": full,
                     "stream": True,
                     "think": config.think,
+                    # Bounds how long Ollama holds the model after we stop talking.
+                    # Refreshed by any client, so a shared model isn't yanked early.
+                    "keep_alive": config.keep_alive,
                 }
                 if tool_schemas:
                     payload["tools"] = tool_schemas

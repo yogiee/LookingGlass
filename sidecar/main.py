@@ -31,6 +31,7 @@ agent_config = AgentConfig(
     system_prompt=system_prompt,
     think=config["model"].get("think", False),
     max_turns=config["agent"].get("max_turns", 10),
+    keep_alive=config["model"].get("keep_alive", "5m"),
 )
 
 registry = ToolRegistry()

@@ -2,6 +2,14 @@
 default = "qwen3.5:9b"
 ollama_host = "http://localhost:11434"
 think = false
+# How long Ollama keeps the model resident after our last request. Sent on every
+# /api/chat call. Multi-process-safe: the timer is refreshed by ANY client's
+# inference, so a model shared with another process (e.g. OllamaMCP) stays loaded
+# as long as that process keeps using it. "5m" matches Ollama's own default —
+# don't shorten aggressively or the model unloads during mid-chat pauses and the
+# next message pays reload latency. Accepts a duration ("5m"), 0 (unload now), or
+# -1 (never unload).
+keep_alive = "5m"
 
 [server]
 port = 8765

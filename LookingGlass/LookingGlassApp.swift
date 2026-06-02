@@ -7,6 +7,13 @@ extension Notification.Name {
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Strong handle to the app's sidecar, assigned by `LookingGlassApp` on appear.
+    /// Strong (not weak) on purpose: SwiftUI may release its `@StateObject` when the
+    /// last window closes, which can precede `applicationWillTerminate`; holding it
+    /// here guarantees the instance — and its child process handle — is still alive
+    /// to stop at termination.
+    var sidecar: SidecarProcess?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Register Roboto Mono before any view renders so the chat voice picks
         // it up on first paint.
@@ -27,6 +34,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Reap our sidecar so it isn't orphaned (and doesn't squat on port 8765
+        // for the next launch). The Ollama model unloads separately via keep_alive.
+        sidecar?.stop()
+    }
 }
 
 @main
@@ -40,6 +53,7 @@ struct LookingGlassApp: App {
             RootView()
                 .environmentObject(sidecar)
                 .environmentObject(store)
+                .onAppear { appDelegate.sidecar = sidecar }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {

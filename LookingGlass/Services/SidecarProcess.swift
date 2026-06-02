@@ -60,11 +60,36 @@ class SidecarProcess: ObservableObject {
         }
     }
 
+    /// Stop the sidecar cleanly. SIGTERM lets uvicorn shut down gracefully; if it
+    /// hasn't exited within a short window we SIGKILL so we never leave an orphan
+    /// (macOS reparents orphaned children to launchd rather than killing them, and
+    /// a stale sidecar would still hold port 8765 on the next launch).
+    ///
+    /// Note: stopping the sidecar does NOT unload the Ollama model — that lives in
+    /// the Ollama daemon and is released by its own keep_alive timer (see
+    /// config.toml). This only reaps our own Python process.
     func stop() {
         healthTask?.cancel()
         healthTask = nil
-        process?.terminate()
+
+        guard let proc = process else {
+            status = .stopped
+            return
+        }
         process = nil
+
+        if proc.isRunning {
+            proc.terminate()  // SIGTERM
+            // Brief synchronous wait — we're almost always inside app termination,
+            // so blocking the main thread for up to ~2s here is acceptable.
+            let deadline = Date().addingTimeInterval(2.0)
+            while proc.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if proc.isRunning {
+                kill(proc.processIdentifier, SIGKILL)
+            }
+        }
         status = .stopped
     }
 
