@@ -10,13 +10,13 @@ import Foundation
 ///   <folder>/guidelines.md     — optional system-prompt addendum (only if provided)
 ///   <folder>/memory-bank/      — portable MD knowledge (MEMORY.md index stub)
 enum ProjectScaffold {
-    static func scaffold(projectID: UUID, name: String, folder: URL, guidelines: String) {
+    static func scaffold(projectID: UUID, name: String, description: String, folder: URL, guidelines: String) {
         let fm = FileManager.default
         do {
             try fm.createDirectory(at: folder, withIntermediateDirectories: true)
 
             let tomlURL = folder.appendingPathComponent("project.toml")
-            try projectTOML(name: name, id: projectID).write(to: tomlURL, atomically: true, encoding: .utf8)
+            try projectTOML(name: name, id: projectID, description: description).write(to: tomlURL, atomically: true, encoding: .utf8)
 
             let trimmedGuidelines = guidelines.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmedGuidelines.isEmpty {
@@ -38,11 +38,17 @@ enum ProjectScaffold {
 
     /// Sensible default task→model map. v1 ships these defaults; editing the map
     /// is a deferred onboarding field (doc §11). The sidecar reads this in Step 3.
-    private static func projectTOML(name: String, id: UUID) -> String {
-        """
+    /// `description` is written into `[project]` so the sidecar (which only sees the
+    /// folder, never the conversation DB) can make Alice aware of what the project
+    /// is — the project path itself is NOT stored here; the sidecar injects that at
+    /// runtime from the live working dir so it can't drift from the actual scope.
+    private static func projectTOML(name: String, id: UUID, description: String) -> String {
+        let trimmedDesc = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let descLine = trimmedDesc.isEmpty ? "" : "\ndescription = \"\(escape(trimmedDesc))\""
+        return """
         [project]
         name = "\(escape(name))"
-        id   = "\(id.uuidString)"
+        id   = "\(id.uuidString)"\(descLine)
 
         [models]
         default  = "qwen3.5:9b"

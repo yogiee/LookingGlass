@@ -6,7 +6,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from project import load_project, project_default_model, read_guidelines
+from project import load_project, project_context, project_default_model, read_guidelines
 from tools.context import reset_working_dir, set_working_dir
 from tools.registry import ToolRegistry
 
@@ -55,8 +55,6 @@ async def chat_stream(
     resolved_model = model or project_default_model(project_cfg) or config.default_model
 
     base_prompt = system_prompt if (system_prompt and system_prompt.strip()) else config.system_prompt
-    guidelines = read_guidelines(project_dir)
-    active_prompt = base_prompt + (f"\n\n---\n\n{guidelines}" if guidelines else "")
 
     # Output scope: explicit working_dir → project folder → independent Inbox.
     scope = working_dir or project_dir
@@ -65,6 +63,20 @@ async def chat_stream(
         work_path.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
+
+    # Prompt = base Alice (+ project context, when in a project) (+ guidelines).
+    # All additive — Invariant #1 keeps a base prompt always present. The project
+    # context's path is the live work_path (== tool scope), never a stored copy.
+    parts = [base_prompt]
+    if project_dir:
+        ctx = project_context(project_cfg, str(work_path))
+        if ctx:
+            parts.append(ctx)
+    guidelines = read_guidelines(project_dir)
+    if guidelines:
+        parts.append(guidelines)
+    active_prompt = "\n\n---\n\n".join(parts)
+
     wd_token = set_working_dir(work_path)
 
     full: list[dict] = [{"role": "system", "content": active_prompt}] + messages
@@ -93,7 +105,17 @@ async def chat_stream(
 
                 try:
                     async with client.stream("POST", f"{host}/api/chat", json=payload) as response:
-                        response.raise_for_status()
+                        if response.status_code >= 400:
+                            # Surface Ollama's actual reason (model not found, OOM,
+                            # bad request…) instead of an opaque status code. Must
+                            # read the body inside the stream context.
+                            body = await response.aread()
+                            detail = body.decode("utf-8", "replace").strip()
+                            msg = f"Ollama HTTP {response.status_code}"
+                            if detail:
+                                msg += f": {detail[:500]}"
+                            yield {"type": "error", "message": msg}
+                            return
                         async for line in response.aiter_lines():
                             if not line.strip():
                                 continue

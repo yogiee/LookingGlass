@@ -171,7 +171,7 @@ final class ConversationStore: ObservableObject {
     func createProject(name: String, description: String, folderURL: URL, guidelines: String) -> UUID {
         let id = UUID()
         let now = Self.epoch()
-        ProjectScaffold.scaffold(projectID: id, name: name, folder: folderURL, guidelines: guidelines)
+        ProjectScaffold.scaffold(projectID: id, name: name, description: description, folder: folderURL, guidelines: guidelines)
         do {
             try dbQueue.write { db in
                 try db.execute(sql: """

@@ -30,6 +30,31 @@ def project_default_model(project_cfg: dict | None) -> str | None:
     return project_cfg.get("models", {}).get("default") or None
 
 
+def project_context(project_cfg: dict | None, working_dir: str) -> str | None:
+    """A short, runtime-composed 'project context' block for the system prompt.
+
+    Makes Alice aware of *where* she is and *what* the project is. Identity/metadata
+    (name, description) come from `project.toml`; the **path comes from the live
+    working dir** — the same value tools are scoped to — so it can never drift from
+    a stored copy. Additive to the base Alice prompt (Invariant #1).
+    """
+    proj = (project_cfg or {}).get("project", {})
+    name = (proj.get("name") or "").strip()
+    desc = (proj.get("description") or "").strip()
+
+    lines = ["## Project context"]
+    lines.append(f'You\'re working in the project "{name}".' if name
+                 else "You're working inside a project.")
+    if desc:
+        lines.append(f"About: {desc}")
+    lines.append(f"Working directory: {working_dir}")
+    lines.append(
+        "Files and shell are scoped to this folder — use relative paths; everything "
+        "you create lands here unless told otherwise."
+    )
+    return "\n".join(lines)
+
+
 def read_guidelines(project_dir: str | None) -> str | None:
     """`<project_dir>/guidelines.md` contents (trimmed), or None."""
     if not project_dir:
