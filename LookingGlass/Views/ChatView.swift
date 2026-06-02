@@ -120,6 +120,13 @@ struct ChatView: View {
     @EnvironmentObject private var store: ConversationStore
     @StateObject private var viewModel = ChatViewModel()
     @StateObject private var inputController = ChatInputController()
+
+    /// The active conversation's project folder (nil = independent chat) — gates
+    /// the per-message "Save to memory" action on assistant bubbles.
+    private var activeProjectDir: String? {
+        guard let cid = store.activeConversationID else { return nil }
+        return store.projectFolderPath(forConversation: cid)
+    }
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.chatFontSize) private var fontSize
     @Environment(\.chatLineHeight) private var lineHeight
@@ -177,12 +184,13 @@ struct ChatView: View {
 
     private var messageList: some View {
         ScrollViewReader { proxy in
+            let projectDir = activeProjectDir   // resolve once per render, not per bubble
             ScrollView {
                 HStack(spacing: 0) {
                     Spacer(minLength: 0)
                     LazyVStack(alignment: .leading, spacing: 20) {
                         ForEach(viewModel.messages) { msg in
-                            MessageBubble(message: msg).id(msg.id)
+                            MessageBubble(message: msg, projectDir: projectDir).id(msg.id)
                         }
                         Color.clear.frame(height: inputReserve + 8).id("bottom")
                     }

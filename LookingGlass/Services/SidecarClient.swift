@@ -146,6 +146,24 @@ class SidecarClient {
         return models
     }
 
+    /// Deterministic per-message memory save (the "Save to memory" button).
+    /// Writes the exact content — no model, no re-wording. Returns success.
+    @discardableResult
+    func saveMemory(content: String, title: String, description: String? = nil, projectDir: String) async -> Bool {
+        guard let url = URL(string: "\(baseURL)/memory/save") else { return false }
+        var body: [String: Any] = ["title": title, "content": content, "project_dir": projectDir]
+        if let description { body["description"] = description }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return (json["success"] as? Bool) ?? false
+    }
+
     func fetchTools() async -> [ToolInfo] {
         guard let url = URL(string: "\(baseURL)/tools"),
               let (data, _) = try? await URLSession.shared.data(from: url),

@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from agent import AgentConfig, chat_stream
+from tools.builtin.memory import save_memory_entry
+from tools.context import reset_project_dir, set_project_dir
 from tools.registry import ToolRegistry
 
 BASE_DIR = Path(__file__).parent
@@ -113,6 +115,31 @@ async def models(ollama_host: str | None = None):
 @app.get("/tools")
 async def tools():
     return {"tools": registry.describe_all()}
+
+
+class MemorySaveRequest(BaseModel):
+    title: str
+    content: str
+    description: str | None = None
+    type: str | None = None
+    project_dir: str | None = None     # which project's memory-bank to write into
+
+
+@app.post("/memory/save")
+async def memory_save(request: MemorySaveRequest):
+    """Deterministic, no-model memory save — backs the per-message "Save to
+    memory" button. Same write path as the save_memory tool; we just set the
+    project context explicitly instead of inheriting it from a chat request."""
+    token = set_project_dir(Path(request.project_dir).expanduser() if request.project_dir else None)
+    try:
+        return save_memory_entry(
+            title=request.title,
+            content=request.content,
+            description=request.description,
+            mem_type=request.type or "project",
+        )
+    finally:
+        reset_project_dir(token)
 
 
 @app.post("/chat")

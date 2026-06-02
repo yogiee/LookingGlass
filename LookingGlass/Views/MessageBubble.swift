@@ -4,6 +4,9 @@ import MarkdownUI
 
 struct MessageBubble: View {
     let message: Message
+    /// The active conversation's project folder, or nil for independent chats.
+    /// When set, assistant messages get a "Save to memory" action.
+    var projectDir: String? = nil
     @Environment(\.chatFontSize) private var fontSize
     @Environment(\.chatLineHeight) private var lineHeight
     @AppStorage("chatFontChoice") private var chatFontChoiceRaw = ChatFontChoice.system.rawValue
@@ -120,7 +123,7 @@ struct MessageBubble: View {
                     bubbleContent
                 }
                 if message.role == .assistant {
-                    MessageActions(content: message.content)
+                    MessageActions(content: message.content, projectDir: projectDir)
                         .opacity(isHovering && !message.isStreaming && !message.content.isEmpty ? 1 : 0)
                 }
             }
@@ -246,7 +249,12 @@ struct AvatarView: View {
 
 struct MessageActions: View {
     let content: String
+    /// Non-nil only when the chat lives in a project → enables "Save to memory".
+    var projectDir: String? = nil
     @State private var copied = false
+    @State private var savedToMemory = false
+    @State private var savingToMemory = false
+    private let client = SidecarClient()
 
     var body: some View {
         HStack(spacing: 2) {
@@ -261,8 +269,49 @@ struct MessageActions: View {
             ActionButton(icon: "arrow.down.circle", label: "Save as Markdown") {
                 saveMarkdown()
             }
+            // Surgical save: stores this message verbatim into the project's
+            // memory-bank — no model, no re-wording. Only inside a project.
+            if projectDir != nil {
+                ActionButton(
+                    icon: savedToMemory ? "checkmark" : "brain",
+                    label: savedToMemory ? "Saved to memory" : "Save to memory"
+                ) {
+                    saveToMemory()
+                }
+                .disabled(savingToMemory)
+            }
         }
         .padding(.leading, 2)
+    }
+
+    private func saveToMemory() {
+        guard let projectDir, !savingToMemory else { return }
+        savingToMemory = true
+        let title = Self.memoryTitle(from: content)
+        Task {
+            let success = await client.saveMemory(content: content, title: title, projectDir: projectDir)
+            await MainActor.run {
+                savingToMemory = false
+                guard success else { return }
+                withAnimation { savedToMemory = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    withAnimation { savedToMemory = false }
+                }
+            }
+        }
+    }
+
+    /// Deterministic title from the message's first meaningful line (the sidecar
+    /// slugifies it for the filename). Content itself is saved verbatim.
+    static func memoryTitle(from content: String) -> String {
+        let firstLine = content
+            .components(separatedBy: .newlines)
+            .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? content
+        var t = firstLine.trimmingCharacters(in: .whitespaces)
+        while let f = t.first, "#-*>•".contains(f) { t.removeFirst() }
+        t = t.trimmingCharacters(in: .whitespaces)
+        if t.count > 60 { t = String(t.prefix(60)).trimmingCharacters(in: .whitespaces) + "…" }
+        return t.isEmpty ? "Saved note" : t
     }
 
     private func saveMarkdown() {
