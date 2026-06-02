@@ -19,8 +19,8 @@ sidecar/.venv/
 # prompt lives in sidecar/prompts/alice.md; runtime images in LookingGlass/Resources).
 WORKSPACE/
 
-# Claude Code — local working docs and settings
-.claude/settings.local.json
+# Claude Code — local working docs and settings (whole dir, never commit)
+.claude/
 CLAUDE.md
 
 # Logs / build output
