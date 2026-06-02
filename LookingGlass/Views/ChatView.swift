@@ -46,6 +46,9 @@ class ChatViewModel: ObservableObject {
         store.appendMessage(userMessage, to: conversationID)
 
         let history = Array(messages.dropLast())
+        // Where this conversation lives — sent so the sidecar scopes tools and
+        // reads project.toml/guidelines.md. nil for independent chats.
+        let projectDir = store.projectFolderPath(forConversation: conversationID)
 
         streamTask = Task {
             defer {
@@ -65,7 +68,8 @@ class ChatViewModel: ObservableObject {
                     model: model,
                     ollamaHost: ollamaHost,
                     enabledTools: enabledTools,
-                    systemPrompt: systemPrompt
+                    systemPrompt: systemPrompt,
+                    projectDir: projectDir
                 ) {
                     guard !Task.isCancelled else { break }
                     apply(event)
@@ -120,7 +124,7 @@ struct ChatView: View {
     @Environment(\.chatFontSize) private var fontSize
     @Environment(\.chatLineHeight) private var lineHeight
 
-    @AppStorage("selectedModel") private var selectedModel = "qwen3.5:9b"
+    @AppStorage("selectedModel") private var selectedModel = ""   // "" = Auto (sidecar resolves)
     @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
     @AppStorage("systemPrompt") private var systemPrompt = ""

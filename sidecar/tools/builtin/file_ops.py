@@ -1,12 +1,20 @@
 from pathlib import Path
 
 from ..base import Tool, ok, err
+from ..context import working_dir
 
 MAX_READ_BYTES = 256_000
 
 
 def _resolve(path: str) -> Path:
-    return Path(path).expanduser().resolve()
+    """Absolute paths and ~ are honored as-is; relative paths resolve against the
+    request's working dir (the project folder, or ~/LookingGlass/Inbox), falling
+    back to home outside a chat request."""
+    p = Path(path).expanduser()
+    if p.is_absolute():
+        return p.resolve()
+    base = working_dir() or Path.home()
+    return (base / p).resolve()
 
 
 async def _file_read(args: dict) -> dict:
@@ -90,7 +98,7 @@ TOOLS = [
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path to the file (absolute, or ~ for home)"},
+                "path": {"type": "string", "description": "File path — relative paths resolve inside the current project folder; absolute and ~ paths are honored as-is"},
             },
             "required": ["path"],
         },
@@ -103,7 +111,7 @@ TOOLS = [
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path to write to"},
+                "path": {"type": "string", "description": "Path to write to — relative paths land in the current project folder (or ~/LookingGlass/Inbox for non-project chats)"},
                 "content": {"type": "string", "description": "Text content to write"},
                 "append": {"type": "boolean", "description": "Append instead of overwrite"},
             },

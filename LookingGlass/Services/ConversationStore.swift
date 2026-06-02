@@ -207,6 +207,19 @@ final class ConversationStore: ObservableObject {
 
     // MARK: - Reads
 
+    /// Filesystem path of the project that owns this conversation, or nil if it's
+    /// an independent chat. Sent to the sidecar as `project_dir` so it can read
+    /// the folder's `project.toml`/`guidelines.md` and scope tools there.
+    func projectFolderPath(forConversation id: UUID) -> String? {
+        (try? dbQueue.read { db in
+            try String.fetchOne(db, sql: """
+                SELECT p.folder_path FROM projects p
+                JOIN conversations c ON c.project_id = p.id
+                WHERE c.id = ?
+                """, arguments: [id.uuidString])
+        }) ?? nil
+    }
+
     /// Full message list for a conversation, in order.
     func loadMessages(_ conversationID: UUID) -> [Message] {
         let rows = (try? dbQueue.read { db in

@@ -71,6 +71,8 @@ class ChatRequest(BaseModel):
     ollama_host: str | None = None
     enabled_tools: list[str] | None = None
     system_prompt: str | None = None
+    project_dir: str | None = None     # absolute project folder, or None for independent chats
+    working_dir: str | None = None     # tool output scope; sidecar derives it when absent
 
 
 def _host_for(override: str | None) -> str:
@@ -114,19 +116,22 @@ async def tools():
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    model = request.model or agent_config.default_model
+    # Model is resolved inside chat_stream (explicit pick → project default →
+    # global default), so the project's [models].default can apply.
     messages = [{"role": m.role, "content": m.content} for m in request.messages]
 
     async def event_gen():
         try:
             async for event in chat_stream(
                 messages,
-                model,
+                request.model,
                 agent_config,
                 registry,
                 enabled_tools=request.enabled_tools,
                 ollama_host=request.ollama_host,
                 system_prompt=request.system_prompt,
+                project_dir=request.project_dir,
+                working_dir=request.working_dir,
             ):
                 yield {"data": json.dumps(event)}
         except Exception as e:

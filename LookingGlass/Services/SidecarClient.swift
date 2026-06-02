@@ -32,7 +32,8 @@ class SidecarClient {
         model: String?,
         ollamaHost: String,
         enabledTools: [String]?,
-        systemPrompt: String?
+        systemPrompt: String?,
+        projectDir: String?
     ) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -54,6 +55,10 @@ class SidecarClient {
                     if let systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         body["system_prompt"] = systemPrompt
                     }
+                    // Project folder (when the chat belongs to a project). The sidecar
+                    // reads project.toml/guidelines.md and scopes tools to it. Swift
+                    // only sends the path — it never inspects the folder's contents.
+                    if let projectDir { body["project_dir"] = projectDir }
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)

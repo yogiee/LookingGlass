@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ModelSelectorPanel: View {
-    @AppStorage("selectedModel") private var selectedModel = "qwen3.5:9b"
+    @AppStorage("selectedModel") private var selectedModel = ""   // "" = Auto
     @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
     @State private var models: [String] = []
     @State private var loading = true
@@ -41,6 +41,15 @@ struct ModelSelectorPanel: View {
         } else {
             ScrollView {
                 LazyVStack(spacing: 0) {
+                    // Auto = let the sidecar choose: a project's project.toml default,
+                    // else the global default. Explicit picks below always override.
+                    ModelRow(
+                        name: "Auto",
+                        hint: "project default, or qwen3.5:9b",
+                        isSelected: selectedModel.isEmpty,
+                        onTap: { selectedModel = "" }
+                    )
+                    Divider().padding(.leading, 14)
                     ForEach(models, id: \.self) { model in
                         ModelRow(
                             name: model,
@@ -59,7 +68,8 @@ struct ModelSelectorPanel: View {
         loading = true
         models = await client.fetchModels(ollamaHost: ollamaHost)
         loading = false
-        if !models.contains(selectedModel), let first = models.first {
+        // Only repair a stale *explicit* pick; never clobber Auto ("").
+        if !selectedModel.isEmpty, !models.contains(selectedModel), let first = models.first {
             selectedModel = first
         }
     }
