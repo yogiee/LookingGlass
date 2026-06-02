@@ -123,8 +123,13 @@ struct MessageBubble: View {
                     bubbleContent
                 }
                 if message.role == .assistant {
-                    MessageActions(content: message.content, projectDir: projectDir)
-                        .opacity(isHovering && !message.isStreaming && !message.content.isEmpty ? 1 : 0)
+                    // Leading Spacer (min width 0) right-aligns the actions to the
+                    // bubble's right edge without widening the column.
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        MessageActions(content: message.content, projectDir: projectDir)
+                    }
+                    .opacity(isHovering && !message.isStreaming && !message.content.isEmpty ? 1 : 0)
                 }
             }
 
@@ -281,7 +286,7 @@ struct MessageActions: View {
                 .disabled(savingToMemory)
             }
         }
-        .padding(.leading, 2)
+        .padding(.trailing, 2)
     }
 
     private func saveToMemory() {
