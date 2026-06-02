@@ -124,6 +124,9 @@ struct ChatView: View {
     @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
     @AppStorage("systemPrompt") private var systemPrompt = ""
+    @AppStorage("chatFontChoice") private var chatFontChoiceRaw = ChatFontChoice.system.rawValue
+
+    private var fontChoice: ChatFontChoice { ChatFontChoice(rawValue: chatFontChoiceRaw) ?? .system }
 
     @State private var inputHeight: CGFloat = 22
     @State private var inputFocused = false
@@ -232,7 +235,8 @@ struct ChatView: View {
             ZStack(alignment: .topLeading) {
                 if viewModel.inputText.isEmpty {
                     Text("Message Alice…   (Enter to send · Shift+Enter for newline)")
-                        .font(.chatProse(fontSize))
+                        .font(fontChoice.font(fontSize))
+                        .tracking(ChatFont.tracking(fontSize))
                         .foregroundStyle(.tertiary)
                         .padding(.leading, 5)
                         .padding(.top, 7)
@@ -243,6 +247,7 @@ struct ChatView: View {
                     height: $inputHeight,
                     fontSize: fontSize,
                     lineHeight: lineHeight,
+                    fontChoice: fontChoice,
                     minHeight: inputMinHeight,
                     maxHeight: inputMaxHeight,
                     controller: inputController,

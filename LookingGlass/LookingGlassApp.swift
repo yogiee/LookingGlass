@@ -1,6 +1,11 @@
 import SwiftUI
 import AppKit
 
+extension Notification.Name {
+    /// Posted by the Settings… menu item (⌘,) — RootView reveals the settings rail.
+    static let openSettings = Notification.Name("openSettings")
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Register Roboto Mono before any view renders so the chat voice picks
@@ -39,6 +44,13 @@ struct LookingGlassApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            // Standard ⌘, — reveals the Settings rail (no separate Settings scene).
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    NotificationCenter.default.post(name: .openSettings, object: nil)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(after: .appInfo) {
                 if AppEnvironment.isBundledApp {
                     Button("Check for Updates…") {

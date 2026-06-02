@@ -147,5 +147,12 @@ struct RootView: View {
         .environment(\.chatFontSize, fontSize)
         .environment(\.chatLineHeight, lineHeight)
         .task { sidecar.start() }
+        // ⌘, (Settings… menu item) reveals the settings rail + sidebar.
+        .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
+            railSelectionRaw = RailTab.settings.rawValue
+            if !sidebarVisible {
+                withAnimation(.spring(duration: 0.22)) { sidebarVisible = true }
+            }
+        }
     }
 }
