@@ -6,48 +6,100 @@ struct MessageBubble: View {
     let message: Message
     @Environment(\.chatFontSize) private var fontSize
     @Environment(\.chatLineHeight) private var lineHeight
+    @AppStorage("chatFontChoice") private var chatFontChoiceRaw = ChatFontChoice.system.rawValue
     @State private var isHovering = false
     @State private var hideTask: Task<Void, Never>?
+
+    private var fontChoice: ChatFontChoice { ChatFontChoice(rawValue: chatFontChoiceRaw) ?? .system }
 
     // SwiftUI Text has no line-height multiple; approximate via lineSpacing.
     private var bubbleLineSpacing: CGFloat { CGFloat(fontSize * (lineHeight - 1)) }
 
-    // Monospaced markdown theme tracking the user's font-size + line-height.
+    // GitHub-flavored rendering, adapted to the chat. Built on MarkdownUI's
+    // GitHub theme (headings with rules, blockquotes with a left bar, alternating
+    // -row tables, task lists, thematic breaks) but with our chat voice: San
+    // Francisco prose + tracking at the Settings font-size, the line-height from
+    // Settings, and our own translucent code background. Code stays monospace and
+    // un-tracked. Single-knob font swap lives in ChatFont.
     private var chatTheme: Theme {
-        Theme()
+        Theme.gitHub
             .text {
                 ForegroundColor(.primary)
-                FontFamilyVariant(.monospaced)
+                FontFamily(fontChoice.markdownFamily)
                 FontSize(CGFloat(fontSize))
+                TextTracking(ChatFont.tracking(fontSize))
             }
             .code {
-                FontFamilyVariant(.monospaced)
-                FontSize(.em(0.92))
+                // Mono pairing for the chosen prose font (else system SF Mono).
+                if let codeFamily = fontChoice.codeFamily {
+                    FontFamily(.custom(codeFamily))
+                } else {
+                    FontFamilyVariant(.monospaced)
+                }
+                FontSize(.em(0.88))
                 BackgroundColor(.primary.opacity(0.08))
+                TextTracking(0)   // code stays tight; don't inherit prose tracking
             }
-            .strong { FontWeight(.bold) }
-            .emphasis { FontStyle(.italic) }
+            .strong { FontWeight(.semibold) }
             .link { ForegroundColor(.accentColor) }
             .paragraph { configuration in
                 configuration.label
+                    .fixedSize(horizontal: false, vertical: true)
                     .relativeLineSpacing(.em(max(0, lineHeight - 1)))
-                    .markdownMargin(top: 0, bottom: 6)
+                    .markdownMargin(top: 0, bottom: 12)
             }
             .codeBlock { configuration in
+                // Wrap long lines (chat bubbles are narrow) rather than GitHub's
+                // horizontal scroll; keep our translucent block background.
                 configuration.label
-                    .relativeLineSpacing(.em(0.18))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .relativeLineSpacing(.em(0.2))
                     .markdownTextStyle {
-                        FontFamilyVariant(.monospaced)
-                        FontSize(.em(0.9))
+                        if let codeFamily = fontChoice.codeFamily {
+                            FontFamily(.custom(codeFamily))
+                        } else {
+                            FontFamilyVariant(.monospaced)
+                        }
+                        FontSize(.em(0.88))
+                        TextTracking(0)
                     }
-                    .padding(10)
+                    .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.primary.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .markdownMargin(top: 6, bottom: 6)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .markdownMargin(top: 16, bottom: 16)
             }
-            .listItem { configuration in
-                configuration.label.markdownMargin(top: .em(0.12))
+            .blockquote { configuration in
+                HStack(spacing: 0) {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Color.primary.opacity(0.18))
+                        .frame(width: 3)
+                    configuration.label
+                        .markdownTextStyle { ForegroundColor(.secondary) }
+                        .padding(.leading, 14)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .markdownMargin(top: 16, bottom: 16)
+            }
+            .table { configuration in
+                configuration.label
+                    .fixedSize(horizontal: false, vertical: true)
+                    .markdownTableBorderStyle(.init(color: .primary.opacity(0.18)))
+                    .markdownTableBackgroundStyle(
+                        .alternatingRows(Color.clear, Color.primary.opacity(0.05))
+                    )
+                    .markdownMargin(top: 16, bottom: 16)
+            }
+            .tableCell { configuration in
+                configuration.label
+                    .markdownTextStyle {
+                        if configuration.row == 0 { FontWeight(.semibold) }
+                        BackgroundColor(nil)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 9)
+                    .padding(.horizontal, 16)
+                    .relativeLineSpacing(.em(0.25))
             }
     }
 
@@ -108,8 +160,18 @@ struct MessageBubble: View {
             .textSelection(.enabled)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(Color.accentColor.opacity(0.18))
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.22))
+            )
+            // Accent ring + soft shadow so the user turn reads as a raised card,
+            // matching Alice's elevated bubble (same elevation system, accent hue).
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.accentColor.opacity(0.40), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .shadow(color: .black.opacity(0.18), radius: 3, x: 0, y: 1)
     }
 
     private var assistantBubble: some View {
@@ -118,33 +180,32 @@ struct MessageBubble: View {
                 HStack(spacing: 6) {
                     ProgressView().scaleEffect(0.7)
                     Text("Thinking…")
-                        .font(.system(size: fontSize))
+                        .font(fontChoice.font(fontSize))
+                        .tracking(ChatFont.tracking(fontSize))
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 13)
-                .background(Color(.controlBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .elevatedSurface(cornerRadius: 14)
             } else if message.isStreaming {
                 // Plain text while streaming — markdown is parsed once on completion
                 // to avoid re-parsing partial/unclosed syntax on every token.
                 Text(message.content)
-                    .font(.system(size: fontSize, design: .monospaced))
+                    .font(fontChoice.font(fontSize))
+                    .tracking(ChatFont.tracking(fontSize))
                     .lineSpacing(bubbleLineSpacing)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 13)
-                    .background(Color(.controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .elevatedSurface(cornerRadius: 14)
             } else {
                 Markdown(message.content)
                     .markdownTheme(chatTheme)
                     .textSelection(.enabled)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 13)
-                    .background(Color(.controlBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .elevatedSurface(cornerRadius: 14)
             }
         }
     }

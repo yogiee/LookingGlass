@@ -1,8 +1,16 @@
 import SwiftUI
 import AppKit
 
+extension Notification.Name {
+    /// Posted by the Settings… menu item (⌘,) — RootView reveals the settings rail.
+    static let openSettings = Notification.Name("openSettings")
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Register Roboto Mono before any view renders so the chat voice picks
+        // it up on first paint.
+        ChatFont.registerBundled()
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         // `swift run` produces a bare executable (no .app bundle / Info.plist),
@@ -25,15 +33,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 struct LookingGlassApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var sidecar = SidecarProcess()
+    @StateObject private var store = ConversationStore()
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environmentObject(sidecar)
+                .environmentObject(store)
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            // Standard ⌘, — reveals the Settings rail (no separate Settings scene).
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    NotificationCenter.default.post(name: .openSettings, object: nil)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
             CommandGroup(after: .appInfo) {
                 if AppEnvironment.isBundledApp {
                     Button("Check for Updates…") {

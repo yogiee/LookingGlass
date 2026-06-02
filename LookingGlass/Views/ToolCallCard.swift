@@ -3,7 +3,6 @@ import SwiftUI
 struct ToolCallCard: View {
     let call: ToolCall
     @State private var expanded = false
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -13,12 +12,7 @@ struct ToolCallCard: View {
                 detail
             }
         }
-        .background(cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
+        .elevatedSurface(cornerRadius: 10)
     }
 
     private var header: some View {
@@ -129,9 +123,5 @@ struct ToolCallCard: View {
 
     private var iconColor: Color {
         call.isThink ? .orange : .accentColor
-    }
-
-    private var cardBackground: Color {
-        colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.03)
     }
 }

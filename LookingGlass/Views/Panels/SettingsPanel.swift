@@ -3,6 +3,7 @@ import AppKit
 
 struct SettingsPanel: View {
     @AppStorage("colorSchemeRaw") private var colorSchemeRaw = AppColorScheme.system.rawValue
+    @AppStorage("chatFontChoice") private var chatFontChoice = ChatFontChoice.system.rawValue
     @AppStorage("fontSize") private var fontSize = 14.0
     @AppStorage("lineHeight") private var lineHeight = 1.2
     @AppStorage("backgroundStyle") private var backgroundStyle = BackgroundStyle.glass.rawValue
@@ -53,6 +54,17 @@ struct SettingsPanel: View {
                 }
             }
             .pickerStyle(.segmented)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Picker("Chat Font", selection: $chatFontChoice) {
+                    ForEach(ChatFontChoice.allCases) { choice in
+                        Text(choice.label).font(choice.font(13)).tag(choice.rawValue)
+                    }
+                }
+                Text("Prose & input. Code always uses the system monospace.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {

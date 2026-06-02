@@ -55,6 +55,7 @@ struct ChatInputEditor: NSViewRepresentable {
     @Binding var height: CGFloat
     let fontSize: CGFloat
     let lineHeight: CGFloat
+    let fontChoice: ChatFontChoice
     let minHeight: CGFloat
     let maxHeight: CGFloat
     let controller: ChatInputController
@@ -106,9 +107,10 @@ struct ChatInputEditor: NSViewRepresentable {
         let para = NSMutableParagraphStyle()
         para.lineHeightMultiple = lineHeight
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular),
+            .font: fontChoice.nsFont(fontSize),
             .paragraphStyle: para,
             .foregroundColor: NSColor.labelColor,
+            .kern: ChatFont.tracking(fontSize),
         ]
         tv.typingAttributes = attrs
         let full = NSRange(location: 0, length: (tv.string as NSString).length)
