@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from ..base import Tool, ok, err
+from ..context import working_dir
 
 DEFAULT_TIMEOUT = 30
 MAX_OUTPUT = 100_000
@@ -13,10 +14,12 @@ async def _shell_exec(args: dict) -> dict:
     if not command:
         return err("Missing required argument: command")
 
-    # Scope to home directory by default (invariant #5). A caller may pass an
-    # explicit cwd, but we don't silently widen scope beyond what's requested.
+    # Default cwd = the request's working dir (the project folder, or
+    # ~/LookingGlass/Inbox for non-project chats), falling back to home outside a
+    # chat request. An explicit cwd still wins. Invariant #5 holds — this narrows
+    # the default; it never silently widens scope beyond what's requested.
     cwd = args.get("cwd")
-    workdir = Path(cwd).expanduser().resolve() if cwd else Path.home()
+    workdir = Path(cwd).expanduser().resolve() if cwd else (working_dir() or Path.home())
     if not workdir.is_dir():
         return err(f"Working directory does not exist: {workdir}")
 
@@ -54,7 +57,7 @@ async def _shell_exec(args: dict) -> dict:
 TOOLS = [
     Tool(
         name="shell_exec",
-        description="Run a shell command and return combined stdout/stderr and the exit code. Defaults to the user's home directory; pass cwd to scope elsewhere.",
+        description="Run a shell command and return combined stdout/stderr and the exit code. Defaults to the current project's folder (or ~/LookingGlass/Inbox for non-project chats); pass cwd to scope elsewhere.",
         parameters={
             "type": "object",
             "properties": {

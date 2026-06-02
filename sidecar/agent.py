@@ -1,10 +1,13 @@
 import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
 
+from project import load_project, project_default_model, read_guidelines
+from tools.context import reset_working_dir, set_working_dir
 from tools.registry import ToolRegistry
 
 
@@ -19,12 +22,14 @@ class AgentConfig:
 
 async def chat_stream(
     messages: list[dict],
-    model: str,
+    model: str | None,
     config: AgentConfig,
     registry: ToolRegistry,
     enabled_tools: list[str] | None = None,
     ollama_host: str | None = None,
     system_prompt: str | None = None,
+    project_dir: str | None = None,
+    working_dir: str | None = None,
 ) -> AsyncIterator[dict]:
     """Agentic loop:
 
@@ -34,122 +39,146 @@ async def chat_stream(
        append the results to the conversation, and loop back to step 1.
     4. When a turn produces no tool calls, emit message_end and stop.
 
-    A non-empty `system_prompt` overrides the sidecar's default (the generic
-    Alice that ships in prompts/alice.md). Either way a system prompt is always
-    prepended — it's never absent.
+    Project interpretation (Step 3): when `project_dir` is set, the project's
+    `project.toml`/`guidelines.md` shape three things —
+      • model: explicit `model` → project `[models].default` → global default,
+      • prompt: base Alice (request override or shipped default) + guidelines,
+      • tool scope: `working_dir` (the project folder, else ~/LookingGlass/Inbox)
+        is published to tools via a contextvar for the duration of the request.
+    Invariant #1 holds — a base system prompt is always present; guidelines are
+    purely additive.
     """
     host = ollama_host or config.ollama_host
-    active_prompt = system_prompt if (system_prompt and system_prompt.strip()) else config.system_prompt
+
+    project_cfg = load_project(project_dir)
+    resolved_model = model or project_default_model(project_cfg) or config.default_model
+
+    base_prompt = system_prompt if (system_prompt and system_prompt.strip()) else config.system_prompt
+    guidelines = read_guidelines(project_dir)
+    active_prompt = base_prompt + (f"\n\n---\n\n{guidelines}" if guidelines else "")
+
+    # Output scope: explicit working_dir → project folder → independent Inbox.
+    scope = working_dir or project_dir
+    work_path = Path(scope).expanduser() if scope else Path.home() / "LookingGlass" / "Inbox"
+    try:
+        work_path.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    wd_token = set_working_dir(work_path)
+
     full: list[dict] = [{"role": "system", "content": active_prompt}] + messages
     tool_schemas = registry.ollama_schemas(enabled_tools)
 
     total_in = 0
     total_out = 0
 
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        for turn in range(config.max_turns):
-            payload = {
-                "model": model,
-                "messages": full,
-                "stream": True,
-                "think": config.think,
-            }
-            if tool_schemas:
-                payload["tools"] = tool_schemas
-
-            assistant_content = ""
-            tool_calls: list[dict] = []
-
-            try:
-                async with client.stream("POST", f"{host}/api/chat", json=payload) as response:
-                    response.raise_for_status()
-                    async for line in response.aiter_lines():
-                        if not line.strip():
-                            continue
-                        try:
-                            data = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-
-                        msg = data.get("message", {})
-                        content = msg.get("content", "")
-                        if content:
-                            assistant_content += content
-                            yield {"type": "content_delta", "text": content}
-
-                        if msg.get("tool_calls"):
-                            tool_calls.extend(msg["tool_calls"])
-
-                        if data.get("done"):
-                            total_in += data.get("prompt_eval_count", 0)
-                            total_out += data.get("eval_count", 0)
-
-            except httpx.ConnectError:
-                yield {"type": "error", "message": f"Ollama not reachable at {host}"}
-                return
-            except httpx.HTTPStatusError as e:
-                yield {"type": "error", "message": f"Ollama HTTP {e.response.status_code}"}
-                return
-            except Exception as e:
-                yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
-                return
-
-            # No tools requested this turn → the model is done talking.
-            if not tool_calls:
-                yield {
-                    "type": "message_end",
-                    "usage": {"input_tokens": total_in, "output_tokens": total_out},
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            for turn in range(config.max_turns):
+                payload = {
+                    "model": resolved_model,
+                    "messages": full,
+                    "stream": True,
+                    "think": config.think,
                 }
-                return
+                if tool_schemas:
+                    payload["tools"] = tool_schemas
 
-            # Record the assistant's turn (content + the calls it wants to make).
-            full.append({
-                "role": "assistant",
-                "content": assistant_content,
-                "tool_calls": tool_calls,
-            })
+                assistant_content = ""
+                tool_calls: list[dict] = []
 
-            # Execute each tool, streaming start/result, and feed results back.
-            for i, tc in enumerate(tool_calls):
-                fn = tc.get("function", {})
-                name = fn.get("name", "")
-                raw_args = fn.get("arguments", {})
-                args = _coerce_args(raw_args)
-                tc_id = f"tc_{turn}_{i}"
+                try:
+                    async with client.stream("POST", f"{host}/api/chat", json=payload) as response:
+                        response.raise_for_status()
+                        async for line in response.aiter_lines():
+                            if not line.strip():
+                                continue
+                            try:
+                                data = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
 
-                yield {"type": "tool_call_start", "id": tc_id, "tool": name, "args": args}
+                            msg = data.get("message", {})
+                            content = msg.get("content", "")
+                            if content:
+                                assistant_content += content
+                                yield {"type": "content_delta", "text": content}
 
-                start = time.monotonic()
-                tool = registry.get(name)
-                if tool is None:
-                    result = {"success": False, "result": f"Unknown tool: {name}"}
-                else:
-                    try:
-                        result = await tool.handler(args)
-                    except Exception as e:
-                        result = {"success": False, "result": f"{type(e).__name__}: {e}"}
-                latency_ms = int((time.monotonic() - start) * 1000)
+                            if msg.get("tool_calls"):
+                                tool_calls.extend(msg["tool_calls"])
 
-                yield {
-                    "type": "tool_call_result",
-                    "id": tc_id,
-                    "tool": name,
-                    "success": result.get("success", False),
-                    "result": result.get("result", ""),
-                    "latency_ms": latency_ms,
-                }
+                            if data.get("done"):
+                                total_in += data.get("prompt_eval_count", 0)
+                                total_out += data.get("eval_count", 0)
 
+                except httpx.ConnectError:
+                    yield {"type": "error", "message": f"Ollama not reachable at {host}"}
+                    return
+                except httpx.HTTPStatusError as e:
+                    yield {"type": "error", "message": f"Ollama HTTP {e.response.status_code}"}
+                    return
+                except Exception as e:
+                    yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+                    return
+
+                # No tools requested this turn → the model is done talking.
+                if not tool_calls:
+                    yield {
+                        "type": "message_end",
+                        "usage": {"input_tokens": total_in, "output_tokens": total_out},
+                    }
+                    return
+
+                # Record the assistant's turn (content + the calls it wants to make).
                 full.append({
-                    "role": "tool",
-                    "content": result.get("result", ""),
-                    "tool_name": name,
+                    "role": "assistant",
+                    "content": assistant_content,
+                    "tool_calls": tool_calls,
                 })
 
-        # Hit the turn ceiling without the model settling.
-        yield {
-            "type": "message_end",
-            "usage": {"input_tokens": total_in, "output_tokens": total_out},
-        }
+                # Execute each tool, streaming start/result, and feed results back.
+                for i, tc in enumerate(tool_calls):
+                    fn = tc.get("function", {})
+                    name = fn.get("name", "")
+                    raw_args = fn.get("arguments", {})
+                    args = _coerce_args(raw_args)
+                    tc_id = f"tc_{turn}_{i}"
+
+                    yield {"type": "tool_call_start", "id": tc_id, "tool": name, "args": args}
+
+                    start = time.monotonic()
+                    tool = registry.get(name)
+                    if tool is None:
+                        result = {"success": False, "result": f"Unknown tool: {name}"}
+                    else:
+                        try:
+                            result = await tool.handler(args)
+                        except Exception as e:
+                            result = {"success": False, "result": f"{type(e).__name__}: {e}"}
+                    latency_ms = int((time.monotonic() - start) * 1000)
+
+                    yield {
+                        "type": "tool_call_result",
+                        "id": tc_id,
+                        "tool": name,
+                        "success": result.get("success", False),
+                        "result": result.get("result", ""),
+                        "latency_ms": latency_ms,
+                    }
+
+                    full.append({
+                        "role": "tool",
+                        "content": result.get("result", ""),
+                        "tool_name": name,
+                    })
+
+            # Hit the turn ceiling without the model settling.
+            yield {
+                "type": "message_end",
+                "usage": {"input_tokens": total_in, "output_tokens": total_out},
+            }
+    finally:
+        reset_working_dir(wd_token)
 
 
 def _coerce_args(raw) -> dict:
