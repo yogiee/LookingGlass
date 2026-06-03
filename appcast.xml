@@ -6,6 +6,27 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.4.0</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.4.0</h3>
+        <ul>
+          <li>Skills: Alice now has step-by-step playbooks (skills) for multi-step tasks. Ships with a deep-research skill — she searches multiple angles, reads the sources, and saves a cited report. Add your own by dropping a SKILL.md in sidecar/skills/</li>
+          <li>Auto model routing: Alice picks the right model for each request — fast chat model for conversation, coding model for code tasks, deep-research model for in-depth dives. No manual switching needed</li>
+          <li>Image paste → vision: paste or drag an image into the input bar, Alice describes it using a vision model without swapping her main model out</li>
+        </ul>
+        <p>Requires Ollama and Homebrew Python on the host.</p>
+      ]]></description>
+      <pubDate>Wed, 03 Jun 2026 20:50:31 +0530</pubDate>
+      <sparkle:version>4</sparkle:version>
+      <sparkle:shortVersionString>0.4.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.4.0/LookingGlass.dmg"
+        sparkle:edSignature="J5ltk4+RueDvXqyT1oh8oY/5PBwkRdbEo2yZJgyc6ai3PY6ixjnnsIjvO7N7wUOxC3h7g37Po3TJ3Xq5pmxeBA=="
+        length="38444159"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.3.0</title>
       <description><![CDATA[
         <h3>Looking Glass 0.3.0</h3>
