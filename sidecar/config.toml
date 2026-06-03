@@ -18,6 +18,15 @@ num_ctx = 16384
 # -1 (never unload).
 keep_alive = "5m"
 
+# Mode-aware routing table (Step 5). Mirrors the [models] section in project.toml.
+# Used for independent (non-project) chats; projects can override per-mode in their
+# own project.toml. Benchmark 2026-06-03: gemma4:latest is the fast-research +
+# tool-heavy dark horse; qwen3.6:27b-mlx is max-nuance at 16 tok/s (MLX scales).
+[models]
+default  = "qwen3.5:9b-mlx"
+coding   = "gemma4:latest"
+research = "qwen3.6:27b-mlx"
+
 [server]
 port = 8765
 host = "127.0.0.1"

@@ -21,8 +21,14 @@ class ChatViewModel: ObservableObject {
         messages = conversationID.map { store.loadMessages($0) } ?? []
     }
 
-    func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?, store: ConversationStore) {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+    func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?, store: ConversationStore, attachmentPath: String? = nil) {
+        let typed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text: String
+        if let path = attachmentPath {
+            text = typed.isEmpty ? "[Image: \(path)]" : "[Image: \(path)]\n\n\(typed)"
+        } else {
+            text = typed
+        }
         guard !text.isEmpty, !isStreaming else { return }
 
         inputText = ""
@@ -141,6 +147,8 @@ struct ChatView: View {
 
     @State private var inputHeight: CGFloat = 22
     @State private var inputFocused = false
+    @State private var pendingAttachment: URL?
+    @State private var pendingImage: NSImage?
 
     private var inputMinHeight: CGFloat { fontSize + 8 }
     private var inputMaxHeight: CGFloat { (fontSize + 8) * 7 }
@@ -162,13 +170,34 @@ struct ChatView: View {
     }
 
     private func submit() {
+        let attachment = pendingAttachment
+        pendingAttachment = nil
+        pendingImage = nil
         viewModel.send(
             model: selectedModel.isEmpty ? nil : selectedModel,
             ollamaHost: ollamaHost,
             enabledTools: decodedEnabledTools(),
             systemPrompt: systemPrompt.isEmpty ? nil : systemPrompt,
-            store: store
+            store: store,
+            attachmentPath: attachment?.path
         )
+    }
+
+    private func handleImagePaste(_ image: NSImage) {
+        pendingImage = image
+        pendingAttachment = saveAttachment(image)
+    }
+
+    private func saveAttachment(_ image: NSImage) -> URL? {
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else { return nil }
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LGAttachments", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(UUID().uuidString + ".png")
+        try? png.write(to: url)
+        return url
     }
 
     // Empty stored value = unconfigured → nil → sidecar enables all tools.
@@ -212,6 +241,10 @@ struct ChatView: View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             VStack(spacing: 0) {
+                if let img = pendingImage {
+                    attachmentStrip(img)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
                 if inputFocused {
                     formattingToolbar
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -264,6 +297,7 @@ struct ChatView: View {
                     maxHeight: inputMaxHeight,
                     controller: inputController,
                     onSend: { submit() },
+                    onImagePaste: { handleImagePaste($0) },
                     onFocusChange: { focused in inputFocused = focused }
                 )
                 .frame(height: inputHeight)
@@ -277,10 +311,42 @@ struct ChatView: View {
                     .foregroundStyle(viewModel.isStreaming ? Color.red : Color.accentColor)
             }
             .buttonStyle(.plain)
-            .disabled(!viewModel.isStreaming && viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(!viewModel.isStreaming && viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pendingAttachment == nil)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    private func attachmentStrip(_ image: NSImage) -> some View {
+        HStack(spacing: 8) {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 52, height: 52)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                )
+            Text("Image attached")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    pendingAttachment = nil
+                    pendingImage = nil
+                }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Remove attachment")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
     }
 
     private var formattingToolbar: some View {

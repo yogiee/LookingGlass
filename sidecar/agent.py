@@ -1,6 +1,6 @@
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -9,13 +9,18 @@ import httpx
 from project import (
     load_project,
     project_context,
-    project_default_model,
+    project_model_for_mode,
     read_guidelines,
     read_memory_index,
 )
+from router import classify_mode
+from skill_loader import skills_index
 from tools.context import (
+    ollama_host as _ctx_ollama_host,
+    reset_ollama_host,
     reset_project_dir,
     reset_working_dir,
+    set_ollama_host,
     set_project_dir,
     set_working_dir,
 )
@@ -31,6 +36,7 @@ class AgentConfig:
     max_turns: int = 10
     keep_alive: str = "5m"
     num_ctx: int = 16384
+    models: dict = field(default_factory=dict)  # global [models] routing table
 
 
 async def chat_stream(
@@ -64,7 +70,17 @@ async def chat_stream(
     host = ollama_host or config.ollama_host
 
     project_cfg = load_project(project_dir)
-    resolved_model = model or project_default_model(project_cfg) or config.default_model
+
+    # Model resolution (Step 5): explicit picker > mode-aware routing > fallback.
+    # classify_mode inspects the last user message; project_model_for_mode consults
+    # the project's [models] table first, then the global routing table.
+    # When the user picks a specific model in Swift, `model` is set and we skip routing.
+    mode = classify_mode(messages) if model is None else "default"
+    resolved_model = (
+        model
+        or project_model_for_mode(project_cfg, config.models, mode)
+        or config.default_model
+    )
 
     base_prompt = system_prompt if (system_prompt and system_prompt.strip()) else config.system_prompt
 
@@ -80,6 +96,20 @@ async def chat_stream(
     # All additive — Invariant #1 keeps a base prompt always present. The project
     # context's path is the live work_path (== tool scope), never a stored copy.
     parts = [base_prompt]
+
+    # Skills index (progressive disclosure): Alice always sees WHICH skills exist;
+    # she pulls the full playbook on demand via use_skill. Mirrors the memory-bank's
+    # passive recall. Gated on the tool being enabled so prompt ⇄ tools stay consistent.
+    use_skill_on = enabled_tools is None or "use_skill" in enabled_tools
+    sk_index = skills_index() if use_skill_on else None
+    if sk_index:
+        parts.append(
+            "## Skills\n"
+            "You have step-by-step playbooks for these tasks. When a request matches "
+            "one, call `use_skill` with its name to load the full instructions before "
+            "starting, then follow them.\n\n" + sk_index
+        )
+
     if project_dir:
         ctx = project_context(project_cfg, str(work_path))
         if ctx:
@@ -100,6 +130,7 @@ async def chat_stream(
 
     wd_token = set_working_dir(work_path)
     pd_token = set_project_dir(Path(project_dir).expanduser() if project_dir else None)
+    oh_token = set_ollama_host(host)
 
     full: list[dict] = [{"role": "system", "content": active_prompt}] + messages
     tool_schemas = registry.ollama_schemas(enabled_tools)
@@ -242,7 +273,7 @@ async def chat_stream(
         # different asyncio context than it started (client disconnect, early break),
         # resetting the contextvar token raises ValueError — harmless cleanup noise,
         # so don't let it propagate out of the generator's teardown.
-        for _reset, _tok in ((reset_working_dir, wd_token), (reset_project_dir, pd_token)):
+        for _reset, _tok in ((reset_working_dir, wd_token), (reset_project_dir, pd_token), (reset_ollama_host, oh_token)):
             try:
                 _reset(_tok)
             except (ValueError, LookupError):

@@ -16,6 +16,10 @@ _working_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "working_dir", default=None
 )
 
+_ollama_host: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "ollama_host", default="http://localhost:11434"
+)
+
 # The project folder for this request, or None for an independent chat. Distinct
 # from working_dir: the latter is the tool *output scope* (and can be overridden);
 # project_dir identifies project membership and anchors the memory-bank, which
@@ -51,3 +55,17 @@ def reset_project_dir(token) -> None:
 def project_dir() -> Path | None:
     """The active request's project folder, or None outside a project chat."""
     return _project_dir.get()
+
+
+def set_ollama_host(host: str):
+    """Set the Ollama host for this request; returns a token to reset() with."""
+    return _ollama_host.set(host)
+
+
+def reset_ollama_host(token) -> None:
+    _ollama_host.reset(token)
+
+
+def ollama_host() -> str:
+    """The active request's Ollama host URL."""
+    return _ollama_host.get()

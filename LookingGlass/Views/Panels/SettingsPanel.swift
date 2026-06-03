@@ -203,7 +203,11 @@ struct SettingsPanel: View {
 
     // MARK: Tools
 
+    @ViewBuilder
     private var toolsSection: some View {
+        let regularTools = tools.filter { $0.category != "skills" }
+        let skillsTools  = tools.filter { $0.category == "skills" }
+
         Section("Tools") {
             if loadingTools {
                 HStack { ProgressView().scaleEffect(0.6); Text("Loading…").foregroundStyle(.secondary) }
@@ -212,22 +216,33 @@ struct SettingsPanel: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             } else {
-                ForEach(tools) { tool in
-                    Toggle(isOn: bindingFor(tool.name)) {
-                        HStack(spacing: 6) {
-                            Text(tool.name)
-                                .font(.system(size: 12, weight: .medium))
-                            if tool.dangerous {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.orange)
-                                    .help("Can modify files or run commands on your system. Enable only if you trust the task.")
-                            }
-                        }
-                        .help(tool.description)
-                    }
+                ForEach(regularTools) { tool in
+                    toolToggle(tool)
                 }
             }
+        }
+        if !skillsTools.isEmpty {
+            Section("Skills") {
+                ForEach(skillsTools) { tool in
+                    toolToggle(tool)
+                }
+            }
+        }
+    }
+
+    private func toolToggle(_ tool: ToolInfo) -> some View {
+        Toggle(isOn: bindingFor(tool.name)) {
+            HStack(spacing: 6) {
+                Text(tool.name)
+                    .font(.system(size: 12, weight: .medium))
+                if tool.dangerous {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.orange)
+                        .help("Can modify files or run commands on your system. Enable only if you trust the task.")
+                }
+            }
+            .help(tool.description)
         }
     }
 
@@ -279,6 +294,17 @@ struct SettingsPanel: View {
         loadingTools = true
         tools = await client.fetchTools()
         loadingTools = false
+        // Auto-enable tools added since the user last configured toggles.
+        if var set = decodedSet() {
+            let fresh = tools.map(\.name).filter { !set.contains($0) }
+            if !fresh.isEmpty {
+                set.formUnion(fresh)
+                if let data = try? JSONEncoder().encode(Array(set).sorted()),
+                   let json = String(data: data, encoding: .utf8) {
+                    enabledToolsJSON = json
+                }
+            }
+        }
     }
 
     private func bindingFor(_ name: String) -> Binding<Bool> {

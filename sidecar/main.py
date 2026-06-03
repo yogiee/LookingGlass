@@ -35,6 +35,7 @@ agent_config = AgentConfig(
     max_turns=config["agent"].get("max_turns", 10),
     keep_alive=config["model"].get("keep_alive", "5m"),
     num_ctx=config["model"].get("num_ctx", 16384),
+    models=config.get("models", {}),
 )
 
 registry = ToolRegistry()

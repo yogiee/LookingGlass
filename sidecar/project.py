@@ -30,6 +30,27 @@ def project_default_model(project_cfg: dict | None) -> str | None:
     return project_cfg.get("models", {}).get("default") or None
 
 
+def project_model_for_mode(
+    project_cfg: dict | None,
+    global_models: dict,
+    mode: str,
+) -> str | None:
+    """Resolve a model for the given routing mode.
+
+    Precedence: project[mode] → global[mode] → project[default] → global[default].
+    Project-specific overrides take priority; the global routing table fills in
+    what the project doesn't override; project[default] is the catch-all within
+    a project; global[default] is the last stop before the absolute fallback.
+    """
+    pm = (project_cfg or {}).get("models", {})
+    return (
+        pm.get(mode)                  # project explicit mode override
+        or global_models.get(mode)    # global routing for this mode
+        or pm.get("default")          # project catch-all
+        or global_models.get("default")  # global catch-all
+    ) or None
+
+
 def project_context(project_cfg: dict | None, working_dir: str) -> str | None:
     """A short, runtime-composed 'project context' block for the system prompt.
 

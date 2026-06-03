@@ -36,8 +36,11 @@ final class ChatInputController: ObservableObject {
 }
 
 /// NSTextView subclass: Enter sends, Shift+Enter inserts a newline.
+/// Image paste is intercepted and routed to `onImagePaste` instead of being
+/// embedded as an attachment in the text.
 final class SendingTextView: NSTextView {
     var onSend: (() -> Void)?
+    var onImagePaste: ((NSImage) -> Void)?
 
     override func keyDown(with event: NSEvent) {
         // keyCode 36 = Return. Plain Return sends; Shift+Return falls through to
@@ -47,6 +50,15 @@ final class SendingTextView: NSTextView {
             return
         }
         super.keyDown(with: event)
+    }
+
+    override func paste(_ sender: Any?) {
+        let pb = NSPasteboard.general
+        if let image = NSImage(pasteboard: pb) {
+            onImagePaste?(image)
+            return   // don't embed as an attachment in the text
+        }
+        super.paste(sender)
     }
 }
 
@@ -60,6 +72,7 @@ struct ChatInputEditor: NSViewRepresentable {
     let maxHeight: CGFloat
     let controller: ChatInputController
     var onSend: () -> Void
+    var onImagePaste: ((NSImage) -> Void)?
     var onFocusChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -72,6 +85,7 @@ struct ChatInputEditor: NSViewRepresentable {
 
         let tv = SendingTextView()
         tv.onSend = onSend
+        tv.onImagePaste = onImagePaste
         tv.delegate = context.coordinator
         tv.drawsBackground = false
         tv.isRichText = false
@@ -96,6 +110,7 @@ struct ChatInputEditor: NSViewRepresentable {
         context.coordinator.parent = self   // refresh stale parent (AppKit/SwiftUI bridge)
         guard let tv = scroll.documentView as? SendingTextView else { return }
         tv.onSend = onSend
+        tv.onImagePaste = onImagePaste
         if tv.string != text {
             tv.string = text
         }
