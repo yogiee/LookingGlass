@@ -51,8 +51,16 @@ async def lifespan(app: FastAPI):
     print(f"[sidecar] Model: {agent_config.default_model}")
     print(f"[sidecar] Ollama: {agent_config.ollama_host}")
     print(f"[sidecar] Tools: {', '.join(registry.names())}")
+
+    mcp_servers = config.get("mcp", {}).get("servers", [])
+    if mcp_servers:
+        await registry.discover_mcp(mcp_servers)
+        print(f"[sidecar] All tools: {', '.join(registry.names())}")
+
     yield
+
     print("[sidecar] Shutting down")
+    await registry.shutdown()
 
 
 app = FastAPI(title="LookingGlass Sidecar", lifespan=lifespan)

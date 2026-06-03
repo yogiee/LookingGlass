@@ -34,3 +34,11 @@ host = "127.0.0.1"
 [agent]
 system_prompt_path = "prompts/alice.md"
 max_turns = 10
+
+# MCP servers — each entry is spawned at startup (stdio transport).
+# Tools are auto-registered alongside builtins; Alice can call them directly.
+# Remove or comment-out an entry to disable that server.
+[[mcp.servers]]
+name    = "memoryCentral"
+command = "/opt/homebrew/bin/node"
+args    = ["/Users/yogi/WORK/PersonalProjects/MemoryCentral/server/index.js"]

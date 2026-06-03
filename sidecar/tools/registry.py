@@ -1,7 +1,7 @@
 import importlib
 import pkgutil
 
-from .base import Tool
+from .base import Tool, err, ok
 
 
 class ToolRegistry:
@@ -11,10 +11,15 @@ class ToolRegistry:
     module-level `TOOLS: list[Tool]` is loaded automatically. Drop a new
     file in builtin/, restart the sidecar, and the tool is available —
     no other code changes (invariant #4).
+
+    MCP servers are registered via discover_mcp() during startup. Their tools
+    appear alongside builtins with category="mcp"; the agent loop treats them
+    identically. Call shutdown() in the lifespan teardown to stop all servers.
     """
 
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self._mcp_connections: list = []   # McpConnection objects
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -49,3 +54,62 @@ class ToolRegistry:
 
     def describe_all(self) -> list[dict]:
         return [t.describe() for t in self._tools.values()]
+
+    async def discover_mcp(self, servers_config: list[dict]) -> None:
+        """Connect to each configured MCP server and register its tools.
+
+        Called once during sidecar startup (inside the FastAPI lifespan).
+        Failed servers are logged and skipped — they don't prevent startup.
+        """
+        from mcp_client import McpConnection
+
+        for cfg in servers_config:
+            name = cfg.get("name") or "unnamed"
+            command = cfg.get("command", "")
+            args = cfg.get("args") or []
+            env = cfg.get("env") or {}
+            if not command:
+                print(f"[mcp] {name}: skipped — no command configured")
+                continue
+
+            conn = McpConnection(name, command, args, env)
+            try:
+                await conn.start()
+                for mcp_tool in conn.tools:
+                    self.register(_wrap_mcp_tool(conn, mcp_tool))
+                self._mcp_connections.append(conn)
+                print(f"[mcp] {name}: connected ({len(conn.tools)} tools)")
+            except Exception as exc:
+                print(f"[mcp] {name}: failed to start — {exc}")
+
+    async def shutdown(self) -> None:
+        """Stop all MCP server connections. Called on sidecar shutdown."""
+        for conn in self._mcp_connections:
+            try:
+                await conn.stop()
+            except Exception:
+                pass
+        self._mcp_connections.clear()
+
+
+def _wrap_mcp_tool(conn, mcp_tool) -> Tool:
+    """Wrap one MCP tool as a sidecar Tool with a proxying async handler."""
+    tool_name = mcp_tool.name
+
+    async def handler(args: dict) -> dict:
+        try:
+            result = await conn.call_tool(tool_name, args)
+            text = "\n".join(
+                c.text for c in result.content if hasattr(c, "text") and c.text
+            )
+            return ok(text) if text else err("MCP tool returned no text content.")
+        except Exception as exc:
+            return err(f"{type(exc).__name__}: {exc}")
+
+    return Tool(
+        name=tool_name,
+        description=mcp_tool.description or "",
+        parameters=mcp_tool.inputSchema or {"type": "object", "properties": {}},
+        handler=handler,
+        category="mcp",
+    )
