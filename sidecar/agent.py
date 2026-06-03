@@ -30,6 +30,7 @@ class AgentConfig:
     think: bool = False
     max_turns: int = 10
     keep_alive: str = "5m"
+    num_ctx: int = 16384
 
 
 async def chat_stream(
@@ -118,6 +119,9 @@ async def chat_stream(
                     # Bounds how long Ollama holds the model after we stop talking.
                     # Refreshed by any client, so a shared model isn't yanked early.
                     "keep_alive": config.keep_alive,
+                    # Cap the context window — the models' 256K default allocates a
+                    # huge KV cache that bloats RAM and chokes big models on 32GB.
+                    "options": {"num_ctx": config.num_ctx},
                 }
                 if tool_schemas:
                     payload["tools"] = tool_schemas
@@ -234,8 +238,15 @@ async def chat_stream(
                 "usage": {"input_tokens": total_in, "output_tokens": total_out},
             }
     finally:
-        reset_working_dir(wd_token)
-        reset_project_dir(pd_token)
+        # Best-effort context cleanup. If the SSE stream is cancelled/closed in a
+        # different asyncio context than it started (client disconnect, early break),
+        # resetting the contextvar token raises ValueError — harmless cleanup noise,
+        # so don't let it propagate out of the generator's teardown.
+        for _reset, _tok in ((reset_working_dir, wd_token), (reset_project_dir, pd_token)):
+            try:
+                _reset(_tok)
+            except (ValueError, LookupError):
+                pass
 
 
 def _coerce_args(raw) -> dict:

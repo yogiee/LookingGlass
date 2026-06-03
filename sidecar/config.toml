@@ -1,7 +1,14 @@
 [model]
-default = "qwen3.5:9b"
+# Chat default. Benchmark 2026-06-03: MLX wins as model size grows; at 16K context
+# qwen3.5:9b-mlx matches the GGUF on quality/voice and is a touch faster.
+default = "qwen3.5:9b-mlx"
 ollama_host = "http://localhost:11434"
 think = false
+# Context window sent to Ollama (in `options`). The models' OWN default is 262144
+# (256K), whose KV cache dwarfs the weights — it bloats RAM for every model and makes
+# the 27B models choke / time out on 32GB. 16K is ample for chat + research and keeps
+# memory sane (it's what made the 27B usable at all). Raise per-need.
+num_ctx = 16384
 # How long Ollama keeps the model resident after our last request. Sent on every
 # /api/chat call. Multi-process-safe: the timer is refreshed by ANY client's
 # inference, so a model shared with another process (e.g. OllamaMCP) stays loaded

@@ -51,9 +51,9 @@ enum ProjectScaffold {
         id   = "\(id.uuidString)"\(descLine)
 
         [models]
-        default  = "qwen3.5:9b"
+        default  = "qwen3.5:9b-mlx"
         coding   = "gemma4:latest"
-        research = "qwen3.5:27b"
+        research = "qwen3.6:27b-mlx"
         """
     }
 
