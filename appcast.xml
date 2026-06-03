@@ -6,6 +6,26 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.5.0</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.5.0</h3>
+        <ul>
+          <li>MCP server support: any MCP server declared in config.toml is spawned at startup and its tools are immediately available to Alice — no code changes needed. Ships with MemoryCentral connected (9 cross-project memory tools)</li>
+          <li>Alice can now search, recall, and save memories across all your projects using semantic and keyword search</li>
+        </ul>
+        <p>Requires Ollama and Homebrew Python on the host.</p>
+      ]]></description>
+      <pubDate>Wed, 03 Jun 2026 21:08:09 +0530</pubDate>
+      <sparkle:version>5</sparkle:version>
+      <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.5.0/LookingGlass.dmg"
+        sparkle:edSignature="9AmTn/pP0FEaSPtpha0RrxSn063/81qbLQHhIQHqGmNpFja8mhsViBARaoNc/mObZ8lh745sJsoqSeWDjao6Dw=="
+        length="48719596"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.4.0</title>
       <description><![CDATA[
         <h3>Looking Glass 0.4.0</h3>
