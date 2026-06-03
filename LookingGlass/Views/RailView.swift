@@ -20,7 +20,7 @@ struct RailView: View {
             RailButton(tab: .settings, isActive: isActive(.settings), onTap: { onSelect(.settings) })
             Spacer().frame(height: 14)
         }
-        .frame(width: 68)
+        .frame(width: 80)
         .frame(maxHeight: .infinity)
         .background(Color.black.opacity(0.22), ignoresSafeAreaEdges: .all)
     }

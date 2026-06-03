@@ -152,8 +152,8 @@ struct ChatView: View {
 
     private var inputMinHeight: CGFloat { fontSize + 8 }
     private var inputMaxHeight: CGFloat { (fontSize + 8) * 7 }
-    // Reserve scroll space for the whole input region (toolbar + field + padding)
-    private var inputReserve: CGFloat { inputHeight + (inputFocused ? 40 : 0) + 44 }
+    // Reserve scroll space for the whole input region (text field + bottom bar + padding)
+    private var inputReserve: CGFloat { inputHeight + 80 }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -216,21 +216,34 @@ struct ChatView: View {
             let projectDir = activeProjectDir   // resolve once per render, not per bubble
             ScrollView {
                 HStack(spacing: 0) {
-                    Spacer(minLength: 0)
+                    Spacer(minLength: 50)
                     LazyVStack(alignment: .leading, spacing: 20) {
                         ForEach(viewModel.messages) { msg in
                             MessageBubble(message: msg, projectDir: projectDir).id(msg.id)
                         }
                         Color.clear.frame(height: inputReserve + 8).id("bottom")
                     }
-                    .frame(maxWidth: 740)
+                    .frame(maxWidth: 960)
                     .padding(.horizontal, 24)
                     .padding(.top, 16)
-                    Spacer(minLength: 0)
+                    Spacer(minLength: 50)
                 }
             }
             .onChange(of: viewModel.messages.last?.content) { _, _ in
                 proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            // Glass shelf: blurs content scrolling under the top/bottom edges.
+            // Top edge ignores safe area so it sits flush under the titlebar.
+            .overlay(alignment: .top) {
+                GlassEdge(atTop: true)
+                    .frame(height: 72)
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+            }
+            .overlay(alignment: .bottom) {
+                GlassEdge(atTop: false)
+                    .frame(height: 96)
+                    .allowsHitTesting(false)
             }
         }
     }
@@ -245,23 +258,22 @@ struct ChatView: View {
                     attachmentStrip(img)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                if inputFocused {
-                    formattingToolbar
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
-                }
-                inputRow
+                // Text field — top of the bar
+                inputTextField
+                // Bottom row: formatting buttons (when focused) + send/stop button
+                inputBottomBar
             }
-            .frame(maxWidth: 740)
+            .frame(maxWidth: 960)
             // Real frosted-glass blur + a tint for contrast
             .background {
                 ZStack {
                     Rectangle().fill(.ultraThinMaterial)
-                    Rectangle().fill(colorScheme == .dark ? Color.black.opacity(0.35) : Color.white.opacity(0.4))
+                    Rectangle().fill(colorScheme == .dark ? Color.black.opacity(0.18) : Color.white.opacity(0.4))
                 }
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
-                    .stroke(Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.15), lineWidth: 1)
+                    .stroke(Color.primary.opacity(colorScheme == .dark ? 0.28 : 0.15), lineWidth: 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .shadow(
@@ -275,46 +287,61 @@ struct ChatView: View {
         .animation(.easeInOut(duration: 0.16), value: inputFocused)
     }
 
-    private var inputRow: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            ZStack(alignment: .topLeading) {
-                if viewModel.inputText.isEmpty {
-                    Text("Message Alice…   (Enter to send · Shift+Enter for newline)")
-                        .font(fontChoice.font(fontSize))
-                        .tracking(ChatFont.tracking(fontSize))
-                        .foregroundStyle(.tertiary)
-                        .padding(.leading, 5)
-                        .padding(.top, 7)
-                        .allowsHitTesting(false)
-                }
-                ChatInputEditor(
-                    text: $viewModel.inputText,
-                    height: $inputHeight,
-                    fontSize: fontSize,
-                    lineHeight: lineHeight,
-                    fontChoice: fontChoice,
-                    minHeight: inputMinHeight,
-                    maxHeight: inputMaxHeight,
-                    controller: inputController,
-                    onSend: { submit() },
-                    onImagePaste: { handleImagePaste($0) },
-                    onFocusChange: { focused in inputFocused = focused }
-                )
-                .frame(height: inputHeight)
+    private var inputTextField: some View {
+        ZStack(alignment: .topLeading) {
+            if viewModel.inputText.isEmpty {
+                Text("Message Alice…   (Enter to send · Shift+Enter for newline)")
+                    .font(fontChoice.font(fontSize))
+                    .tracking(ChatFont.tracking(fontSize))
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 5)
+                    .padding(.top, 7)
+                    .allowsHitTesting(false)
             }
+            ChatInputEditor(
+                text: $viewModel.inputText,
+                height: $inputHeight,
+                fontSize: fontSize,
+                lineHeight: lineHeight,
+                fontChoice: fontChoice,
+                minHeight: inputMinHeight,
+                maxHeight: inputMaxHeight,
+                controller: inputController,
+                onSend: { submit() },
+                onImagePaste: { handleImagePaste($0) },
+                onFocusChange: { focused in inputFocused = focused }
+            )
+            .frame(height: inputHeight)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+    }
 
+    private var inputBottomBar: some View {
+        HStack(alignment: .center, spacing: 2) {
+            if inputFocused {
+                FormatButton(icon: "bold", help: "Bold") { inputController.wrap(prefix: "**", suffix: "**") }
+                FormatButton(icon: "italic", help: "Italic") { inputController.wrap(prefix: "*", suffix: "*") }
+                FormatButton(icon: "chevron.left.forwardslash.chevron.right", help: "Inline code") { inputController.wrap(prefix: "`", suffix: "`") }
+                FormatButton(icon: "curlybraces", help: "Code block") { inputController.wrap(prefix: "\n```\n", suffix: "\n```\n") }
+                FormatButton(icon: "list.bullet", help: "List item") { inputController.wrap(prefix: "\n- ", suffix: "") }
+            }
+            Spacer()
             Button {
                 if viewModel.isStreaming { viewModel.cancelStream() } else { submit() }
             } label: {
                 Image(systemName: viewModel.isStreaming ? "stop.circle.fill" : "arrow.up.circle.fill")
-                    .font(.title2)
+                    .font(.system(size: 32))
                     .foregroundStyle(viewModel.isStreaming ? Color.red : Color.accentColor)
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.isStreaming && viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pendingAttachment == nil)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 10)
+        .padding(.top, 2)
+        .padding(.bottom, 8)
+        .animation(.easeInOut(duration: 0.16), value: inputFocused)
     }
 
     private func attachmentStrip(_ image: NSImage) -> some View {
@@ -349,19 +376,6 @@ struct ChatView: View {
         .padding(.vertical, 8)
     }
 
-    private var formattingToolbar: some View {
-        HStack(spacing: 2) {
-            FormatButton(icon: "bold", help: "Bold") { inputController.wrap(prefix: "**", suffix: "**") }
-            FormatButton(icon: "italic", help: "Italic") { inputController.wrap(prefix: "*", suffix: "*") }
-            FormatButton(icon: "chevron.left.forwardslash.chevron.right", help: "Inline code") { inputController.wrap(prefix: "`", suffix: "`") }
-            FormatButton(icon: "curlybraces", help: "Code block") { inputController.wrap(prefix: "\n```\n", suffix: "\n```\n") }
-            FormatButton(icon: "list.bullet", help: "List item") { inputController.wrap(prefix: "\n- ", suffix: "") }
-            Spacer()
-        }
-        .padding(.horizontal, 10)
-        .padding(.top, 8)
-        .padding(.bottom, 2)
-    }
 }
 
 struct FormatButton: View {

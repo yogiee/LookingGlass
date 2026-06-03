@@ -194,7 +194,7 @@ struct MessageBubble: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 13)
-                .elevatedSurface(cornerRadius: 14)
+                .elevatedSurface(cornerRadius: 14, fillOpacity: 0.25)
             } else if message.isStreaming {
                 // Plain text while streaming — markdown is parsed once on completion
                 // to avoid re-parsing partial/unclosed syntax on every token.
@@ -206,14 +206,14 @@ struct MessageBubble: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 13)
-                    .elevatedSurface(cornerRadius: 14)
+                    .elevatedSurface(cornerRadius: 14, fillOpacity: 0.25)
             } else {
                 Markdown(message.content)
                     .markdownTheme(chatTheme)
                     .textSelection(.enabled)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 13)
-                    .elevatedSurface(cornerRadius: 14)
+                    .elevatedSurface(cornerRadius: 14, fillOpacity: 0.25)
             }
         }
     }

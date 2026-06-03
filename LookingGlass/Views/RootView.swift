@@ -127,7 +127,7 @@ struct RootView: View {
 
             if sidebarVisible {
                 SidebarView(tab: railTab)
-                    .frame(width: 260)
+                    .frame(width: 380)
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
@@ -138,7 +138,7 @@ struct RootView: View {
             ChatView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 700, minHeight: 500)
+        .frame(minWidth: 900, minHeight: 500)
         .background {
             backgroundLayer.ignoresSafeArea()
         }

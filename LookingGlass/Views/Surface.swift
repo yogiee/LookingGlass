@@ -10,8 +10,9 @@ import SwiftUI
 /// no shadow, so they read as inset wells.
 extension View {
     /// Raised surface for message bubbles, tool cards, popovers.
-    func elevatedSurface(cornerRadius: CGFloat = 12) -> some View {
-        modifier(ElevatedSurface(cornerRadius: cornerRadius))
+    /// `fillOpacity` scales the fill alpha — pass a value < 1 for a ghost/faint bubble.
+    func elevatedSurface(cornerRadius: CGFloat = 12, fillOpacity: Double = 1.0) -> some View {
+        modifier(ElevatedSurface(cornerRadius: cornerRadius, fillOpacity: fillOpacity))
     }
 
     /// Recessed surface for search / input fields.
@@ -22,6 +23,7 @@ extension View {
 
 private struct ElevatedSurface: ViewModifier {
     let cornerRadius: CGFloat
+    var fillOpacity: Double = 1.0
     @Environment(\.colorScheme) private var scheme
 
     func body(content: Content) -> some View {
@@ -44,7 +46,9 @@ private struct ElevatedSurface: ViewModifier {
     }
 
     private var fill: Color {
-        scheme == .dark ? Color.white.opacity(0.07) : Color.white.opacity(0.66)
+        scheme == .dark
+            ? Color.white.opacity(0.07 * fillOpacity)
+            : Color.white.opacity(0.66 * fillOpacity)
     }
     private var ring: Color { Color.primary.opacity(scheme == .dark ? 0.13 : 0.10) }
 }

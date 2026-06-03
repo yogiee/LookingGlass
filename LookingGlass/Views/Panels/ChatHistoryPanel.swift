@@ -39,7 +39,11 @@ struct ChatHistoryPanel: View {
     // MARK: Headers
 
     private var rootHeader: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 8) {
+            Asset.image("alice")
+                .scaledToFill()
+                .frame(width: 48, height: 48)
+                .clipShape(Circle())
             Text("Looking Glass")
                 .font(.headline)
             Spacer()
@@ -204,7 +208,7 @@ struct ChatHistoryPanel: View {
     private func sectionLabel(_ text: String) -> some View {
         HStack {
             Text(text.uppercased())
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.tertiary)
             Spacer()
         }
@@ -265,7 +269,7 @@ struct ProjectRow: View {
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
                 Text(project.chatCount == 1 ? "1 chat" : "\(project.chatCount) chats")
-                    .font(.system(size: 11))
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
 
@@ -324,7 +328,7 @@ struct ChatHistoryRow: View {
                         .lineLimit(1)
                 }
                 Text(preview)
-                    .font(.system(size: 12))
+                    .font(.system(size: 14))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -341,7 +345,7 @@ struct ChatHistoryRow: View {
                     }
                 } else {
                     Text(time)
-                        .font(.system(size: 11))
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
             }
