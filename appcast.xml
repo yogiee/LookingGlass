@@ -6,6 +6,30 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.6.5</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.6.5 — Liquid Glass UI</h3>
+        <ul>
+          <li>macOS 26+ native Liquid Glass throughout — circular glass rail buttons, floating sidebar panel, .glassEffect() on bubbles, input bar, and tool cards</li>
+          <li>Wonderland v2 avatars: Caterpillar (Tools), White Rabbit (System), Mad Hatter (Settings) — full kawaii/chibi cast with disc-tint colours</li>
+          <li>Third backdrop "White Rabbit" — Alice and the Rabbit walking, light + dark variants. Settings now has Glass / Wonderland / White Rabbit</li>
+          <li>Edge blur: 80pt top / 120pt bottom gradient mask on the chat scroll view</li>
+          <li>Alice easter egg: large avatar centred in the chat until the first conversation loads</li>
+          <li>Model panel separators now edge-to-edge; sidebar floats with equal window margins and a hairline border</li>
+        </ul>
+        <p>Requires macOS 26, Ollama, and Homebrew Python on the host.</p>
+      ]]></description>
+      <pubDate>Fri, 05 Jun 2026 04:30:00 +0530</pubDate>
+      <sparkle:version>7</sparkle:version>
+      <sparkle:shortVersionString>0.6.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.6.5/LookingGlass.dmg"
+        sparkle:edSignature="rsgCrxfzwUdZDmSuGeaGSehyLDuhmCQQ/t9qmhLmWNURCZSRBcxJ/KTTYrSS3BURVE+MLPD1wtqIP1/wh/2ABQ=="
+        length="50466283"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.6.0</title>
       <description><![CDATA[
         <h3>Looking Glass 0.6.0 — UI Polish</h3>
