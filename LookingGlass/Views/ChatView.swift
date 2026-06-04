@@ -219,7 +219,15 @@ struct ChatView: View {
                     Spacer(minLength: 50)
                     LazyVStack(alignment: .leading, spacing: 20) {
                         ForEach(viewModel.messages) { msg in
-                            MessageBubble(message: msg, projectDir: projectDir).id(msg.id)
+                            MessageBubble(message: msg, projectDir: projectDir)
+                                .id(msg.id)
+                                .scrollTransition(.interactive) { content, phase in
+                                    let raw = abs(phase.value)
+                                    let v = raw < 0.35 ? 0 : (raw - 0.35) / 0.65
+                                    return content
+                                        .blur(radius: 12 * v)
+                                        .opacity(max(0.35, 1.0 - 0.65 * v))
+                                }
                         }
                         Color.clear.frame(height: inputReserve + 8).id("bottom")
                     }
@@ -236,13 +244,13 @@ struct ChatView: View {
             // Top edge ignores safe area so it sits flush under the titlebar.
             .overlay(alignment: .top) {
                 GlassEdge(atTop: true)
-                    .frame(height: 72)
+                    .frame(height: 70)
                     .ignoresSafeArea(edges: .top)
                     .allowsHitTesting(false)
             }
             .overlay(alignment: .bottom) {
                 GlassEdge(atTop: false)
-                    .frame(height: 96)
+                    .frame(height: 90)
                     .allowsHitTesting(false)
             }
         }

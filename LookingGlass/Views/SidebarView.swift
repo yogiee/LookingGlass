@@ -26,7 +26,7 @@ struct PanelHeader: View {
                     )
             }
             Text(title)
-                .font(.headline)
+                .font(.system(size: 24, weight: .semibold))
             Spacer()
         }
         .padding(.horizontal, 16)

@@ -45,67 +45,67 @@ struct ChatHistoryPanel: View {
                 .frame(width: 48, height: 48)
                 .clipShape(Circle())
             Text("Looking Glass")
-                .font(.headline)
+                .font(.system(size: 24, weight: .semibold))
             Spacer()
             Button { showingNewProject = true } label: {
-                Image(systemName: "folder.badge.plus").font(.system(size: 14))
+                Image(systemName: "folder.badge.plus").font(.system(size: 16))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .help("New project")
 
             Button { store.startNewChat() } label: {
-                Image(systemName: "square.and.pencil").font(.system(size: 15))
+                Image(systemName: "square.and.pencil").font(.system(size: 17))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .help("New chat")
         }
         .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
     }
 
     private func projectHeader(_ project: ProjectListItem) -> some View {
         HStack(spacing: 8) {
             Button { store.exitProject() } label: {
-                Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold))
+                Image(systemName: "chevron.left").font(.system(size: 15, weight: .semibold))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .help("Back to all chats")
 
             Image(systemName: "folder.fill")
-                .font(.system(size: 13))
+                .font(.system(size: 15))
                 .foregroundStyle(.secondary)
             Text(project.name)
-                .font(.headline)
+                .font(.system(size: 24, weight: .semibold))
                 .lineLimit(1)
             Spacer()
             Button { store.startNewChat() } label: {
-                Image(systemName: "square.and.pencil").font(.system(size: 15))
+                Image(systemName: "square.and.pencil").font(.system(size: 17))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .help("New chat in this project")
         }
         .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
     }
 
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 13))
+                .font(.system(size: 15))
                 .foregroundStyle(.secondary)
             TextField(inProjectView ? "Search this project" : "Search", text: $store.searchText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(.system(size: 15))
             if !store.searchText.isEmpty {
                 Button { store.searchText = "" } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
+                        .font(.system(size: 14))
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
@@ -208,7 +208,7 @@ struct ChatHistoryPanel: View {
     private func sectionLabel(_ text: String) -> some View {
         HStack {
             Text(text.uppercased())
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.tertiary)
             Spacer()
         }
@@ -220,10 +220,10 @@ struct ChatHistoryPanel: View {
     private var emptyState: some View {
         VStack(spacing: 6) {
             Image(systemName: store.searchText.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass")
-                .font(.system(size: 22))
+                .font(.system(size: 24))
                 .foregroundStyle(.tertiary)
             Text(emptyMessage)
-                .font(.system(size: 12))
+                .font(.system(size: 14))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
         }
@@ -260,23 +260,23 @@ struct ProjectRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "folder.fill")
-                .font(.system(size: 14))
+                .font(.system(size: 16))
                 .foregroundStyle(Color.accentColor.opacity(0.8))
                 .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(project.name)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 15, weight: .medium))
                     .lineLimit(1)
                 Text(project.chatCount == 1 ? "1 chat" : "\(project.chatCount) chats")
-                    .font(.system(size: 13))
+                    .font(.system(size: 15))
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
 
             Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 14)
@@ -318,17 +318,17 @@ struct ChatHistoryRow: View {
                 if isEditing {
                     TextField("Name this chat", text: $draftTitle)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 15, weight: .medium))
                         .focused(renameFocused)
                         .onSubmit(onCommitRename)
                         .onExitCommand(perform: onCancelRename)   // Esc
                 } else {
                     Text(title)
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: 15, weight: .medium))
                         .lineLimit(1)
                 }
                 Text(preview)
-                    .font(.system(size: 14))
+                    .font(.system(size: 16))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -345,7 +345,7 @@ struct ChatHistoryRow: View {
                     }
                 } else {
                     Text(time)
-                        .font(.system(size: 13))
+                        .font(.system(size: 15))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -377,7 +377,7 @@ struct ChatHistoryRow: View {
 
     private func actionButton(_ systemName: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: systemName).font(.system(size: 12))
+            Image(systemName: systemName).font(.system(size: 14))
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)

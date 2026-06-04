@@ -112,12 +112,12 @@ struct ModelRow: View {
         Button(action: onTap) {
             HStack(spacing: 10) {
                 Text(name)
-                    .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                    .font(.system(size: 16, weight: isSelected ? .semibold : .regular))
                     .lineLimit(1)
                 Spacer()
                 if let badge {
                     Text(badge)
-                        .font(.system(size: 10, weight: .medium))
+                        .font(.system(size: 14, weight: .medium))
                         .foregroundStyle((tint ?? .secondary).opacity(0.9))
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
@@ -128,7 +128,7 @@ struct ModelRow: View {
                 }
                 if isSelected {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(Color.accentColor)
                 }
             }
