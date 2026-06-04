@@ -3,7 +3,7 @@ import SwiftUI
 struct ToolCardsPanel: View {
     var body: some View {
         VStack(spacing: 0) {
-            PanelHeader(title: "Tool Calls", character: "rabbit")
+            PanelHeader(title: "Tool Calls", character: "caterpillar")
             Divider()
             emptyState
         }

@@ -15,13 +15,15 @@ enum AppColorScheme: String, CaseIterable {
 }
 
 enum BackgroundStyle: String, CaseIterable {
-    case glass      // desktop-vibrancy glass (default)
-    case wonderland // themed Wonderland backdrop, switches with light/dark
+    case glass          // desktop-vibrancy glass (default)
+    case wonderland     // Wonderland garland backdrop
+    case wonderlandWalk // Wonderland "down the path" backdrop
 
     var label: String {
         switch self {
-        case .glass:      return "Glass"
-        case .wonderland: return "Wonderland"
+        case .glass:          return "Glass"
+        case .wonderland:     return "Wonderland"
+        case .wonderlandWalk: return "White Rabbit"
         }
     }
 }

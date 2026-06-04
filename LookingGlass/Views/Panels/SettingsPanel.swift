@@ -20,7 +20,7 @@ struct SettingsPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PanelHeader(title: "Settings", showAppIcon: true)
+            PanelHeader(title: "Settings", character: "hatter")
             Divider()
             Form {
                 appearanceSection

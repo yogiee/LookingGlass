@@ -6,7 +6,7 @@ struct SystemMonitorPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PanelHeader(title: "System", character: "queen")
+            PanelHeader(title: "System", character: "rabbit")
             Divider()
             ScrollView {
                 VStack(spacing: 10) {

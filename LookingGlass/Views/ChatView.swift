@@ -221,13 +221,6 @@ struct ChatView: View {
                         ForEach(viewModel.messages) { msg in
                             MessageBubble(message: msg, projectDir: projectDir)
                                 .id(msg.id)
-                                .scrollTransition(.interactive) { content, phase in
-                                    let raw = abs(phase.value)
-                                    let v = raw < 0.35 ? 0 : (raw - 0.35) / 0.65
-                                    return content
-                                        .blur(radius: 12 * v)
-                                        .opacity(max(0.35, 1.0 - 0.65 * v))
-                                }
                         }
                         Color.clear.frame(height: inputReserve + 8).id("bottom")
                     }
@@ -237,10 +230,20 @@ struct ChatView: View {
                     Spacer(minLength: 50)
                 }
             }
+            .mask(
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 50)
+                    Color.black
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: 80)
+                }
+            )
             .onChange(of: viewModel.messages.last?.content) { _, _ in
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
-            // Glass shelf: blurs content scrolling under the top/bottom edges.
+            // Glass shelf: gradient overlay sits on top of the masked scroll content,
+            // reinforcing the frosted-glass edge look.
             // Top edge ignores safe area so it sits flush under the titlebar.
             .overlay(alignment: .top) {
                 GlassEdge(atTop: true)

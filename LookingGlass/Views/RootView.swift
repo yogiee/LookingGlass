@@ -99,9 +99,15 @@ struct RootView: View {
             // low opacity — a graphical hint, not a full takeover. Bottom-anchored
             // via an explicit GeometryReader frame so the mushroom landscape stays
             // pinned to the window floor. Light mode needs more opacity (pale art).
-            if backgroundStyle == .wonderland {
+            if backgroundStyle == .wonderland || backgroundStyle == .wonderlandWalk {
+                let name: String = {
+                    let walk = backgroundStyle == .wonderlandWalk
+                    return activeColorScheme == .dark
+                        ? (walk ? "bg-dark-walk" : "bg-dark")
+                        : (walk ? "bg-light-walk" : "bg-light")
+                }()
                 GeometryReader { geo in
-                    Asset.image(activeColorScheme == .dark ? "bg-dark" : "bg-light")
+                    Asset.image(name)
                         .scaledToFill()
                         .frame(width: geo.size.width, height: geo.size.height, alignment: .bottom)
                         .clipped()
