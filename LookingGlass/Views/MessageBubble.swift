@@ -170,16 +170,9 @@ struct MessageBubble: View {
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.accentColor.opacity(0.22))
+                    .fill(Color.accentColor.opacity(0.25))
             )
-            // Accent ring + soft shadow so the user turn reads as a raised card,
-            // matching Alice's elevated bubble (same elevation system, accent hue).
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.accentColor.opacity(0.40), lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .shadow(color: .black.opacity(0.18), radius: 3, x: 0, y: 1)
+            .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
     }
 
     private var assistantBubble: some View {
@@ -194,7 +187,7 @@ struct MessageBubble: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 13)
-                .elevatedSurface(cornerRadius: 14, fillOpacity: 0.25)
+                .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
             } else if message.isStreaming {
                 // Plain text while streaming — markdown is parsed once on completion
                 // to avoid re-parsing partial/unclosed syntax on every token.
@@ -206,14 +199,14 @@ struct MessageBubble: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 13)
-                    .elevatedSurface(cornerRadius: 14, fillOpacity: 0.25)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
             } else {
                 Markdown(message.content)
                     .markdownTheme(chatTheme)
                     .textSelection(.enabled)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 13)
-                    .elevatedSurface(cornerRadius: 14, fillOpacity: 0.25)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
             }
         }
     }

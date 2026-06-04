@@ -4,6 +4,7 @@ import AppKit
 /// Controller the SwiftUI formatting toolbar uses to manipulate the live
 /// NSTextView (wrap selection in markdown, focus). Avoids round-tripping
 /// selection state through SwiftUI.
+@MainActor
 final class ChatInputController: ObservableObject {
     weak var textView: NSTextView?
 

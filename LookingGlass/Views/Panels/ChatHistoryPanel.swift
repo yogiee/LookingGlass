@@ -113,7 +113,7 @@ struct ChatHistoryPanel: View {
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 10)
-        .insetField(cornerRadius: 8)
+        .background(.regularMaterial, in: .rect(cornerRadius: 8, style: .continuous))
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
     }

@@ -1,9 +1,9 @@
 import SwiftUI
 import AppKit
 
-// NSVisualEffectView with .behindWindow blending.
-// .underWindowBackground is the only material that works with .behindWindow.
-// colorScheme is propagated via updateNSView so live appearance changes work.
+// NSVisualEffectView with .behindWindow blending — the only way to get true
+// frosted-desktop blur in SwiftUI. SwiftUI materials alone can't reach outside
+// the window frame to sample the desktop.
 struct VibrancyBackground: NSViewRepresentable {
     let colorScheme: ColorScheme?
 
@@ -16,7 +16,6 @@ struct VibrancyBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        // Keep the view's own appearance in sync; nil means inherit from NSApp
         nsView.appearance = nsAppearance(for: colorScheme)
     }
 }
@@ -40,15 +39,11 @@ struct WindowChromeConfigurator: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
-            // NSApp.appearance is the app-level authority SwiftUI observes —
-            // setting it nil reverts to system immediately and triggers
-            // environment re-evaluation without needing a focus change.
             NSApp.appearance = nsAppearance(for: colorScheme)
         }
     }
 }
 
-// nil → follow system; .dark / .light → force that appearance on the NSWindow/NSView
 private func nsAppearance(for scheme: ColorScheme?) -> NSAppearance? {
     switch scheme {
     case .dark:  return NSAppearance(named: .darkAqua)
@@ -76,45 +71,35 @@ struct RootView: View {
         RailTab(rawValue: railSelectionRaw) ?? .chats
     }
 
-    // nil if "System", otherwise the forced preference
     private var preferredColorScheme: ColorScheme? {
         (AppColorScheme(rawValue: colorSchemeRaw) ?? .system).colorScheme
     }
 
-    // The actually-active scheme, resolving "System" from the environment
     private var activeColorScheme: ColorScheme {
         preferredColorScheme ?? systemColorScheme
     }
 
+    // Wonderland backdrop fills the window. Glass mode darkens the desktop for readability.
     @ViewBuilder
     private var backgroundLayer: some View {
-        ZStack {
-            // Base glass in both modes.
+        if backgroundStyle == .wonderland || backgroundStyle == .wonderlandWalk {
+            let name: String = {
+                let walk = backgroundStyle == .wonderlandWalk
+                return activeColorScheme == .dark
+                    ? (walk ? "bg-dark-walk" : "bg-dark")
+                    : (walk ? "bg-light-walk" : "bg-light")
+            }()
+            GeometryReader { geo in
+                Asset.image(name)
+                    .scaledToFill()
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .bottom)
+                    .clipped()
+            }
+            .opacity(0.9)
+        } else {
+            // Glass mode: frosted desktop blur + dark tint for readability.
             VibrancyBackground(colorScheme: preferredColorScheme)
-            // Dark mode: dark frosting so desktop detail is obscured.
-            if activeColorScheme == .dark {
-                Color.black.opacity(0.38)
-            }
-            // Wonderland: faint themed backdrop layered over the glass at fixed
-            // low opacity — a graphical hint, not a full takeover. Bottom-anchored
-            // via an explicit GeometryReader frame so the mushroom landscape stays
-            // pinned to the window floor. Light mode needs more opacity (pale art).
-            if backgroundStyle == .wonderland || backgroundStyle == .wonderlandWalk {
-                let name: String = {
-                    let walk = backgroundStyle == .wonderlandWalk
-                    return activeColorScheme == .dark
-                        ? (walk ? "bg-dark-walk" : "bg-dark")
-                        : (walk ? "bg-light-walk" : "bg-light")
-                }()
-                GeometryReader { geo in
-                    Asset.image(name)
-                        .scaledToFill()
-                        .frame(width: geo.size.width, height: geo.size.height, alignment: .bottom)
-                        .clipped()
-                }
-                .opacity(activeColorScheme == .dark ? 0.22 : 0.42)
-                .allowsHitTesting(false)
-            }
+            Color.black.opacity(activeColorScheme == .dark ? 0.35 : 0.08)
         }
     }
 
@@ -134,16 +119,21 @@ struct RootView: View {
             if sidebarVisible {
                 SidebarView(tab: railTab)
                     .frame(width: 380)
+                    .padding(.vertical, 8)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    // Hairline border so the panel reads against the frosted backdrop
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
+                            .padding(.vertical, 8)
+                    )
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
-
-            Rectangle()
-                .fill(.separator.opacity(0.4))
-                .frame(width: 0.5)
 
             ChatView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .ignoresSafeArea()  // let padding(.vertical,8) measure from actual window edges
         .frame(minWidth: 900, minHeight: 500)
         .background {
             backgroundLayer.ignoresSafeArea()
@@ -153,7 +143,6 @@ struct RootView: View {
         .environment(\.chatFontSize, fontSize)
         .environment(\.chatLineHeight, lineHeight)
         .task { sidecar.start() }
-        // ⌘, (Settings… menu item) reveals the settings rail + sidebar.
         .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
             railSelectionRaw = RailTab.settings.rawValue
             if !sidebarVisible {

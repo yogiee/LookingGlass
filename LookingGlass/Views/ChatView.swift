@@ -158,8 +158,16 @@ struct ChatView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             messageList
+            // Easter egg: Alice watches from the center until the first chat loads.
+            // Once messages exist there's no way back — she only appears on fresh launch.
+            if viewModel.messages.isEmpty {
+                aliceEmptyState
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
             floatingInputBar
         }
+        .animation(.easeInOut(duration: 0.4), value: viewModel.messages.isEmpty)
         // Sidebar selection (or New Chat) drives which conversation is shown.
         // Guard against the self-triggered change when send() creates a new one.
         .onChange(of: store.activeConversationID) { _, newID in
@@ -167,6 +175,15 @@ struct ChatView: View {
                 viewModel.load(newID, store: store)
             }
         }
+    }
+
+    private var aliceEmptyState: some View {
+        Asset.image("alice")
+            .scaledToFill()
+            .frame(width: 140, height: 140)
+            .clipShape(Circle())
+            .opacity(0.55)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func submit() {
@@ -233,28 +250,14 @@ struct ChatView: View {
             .mask(
                 VStack(spacing: 0) {
                     LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                        .frame(height: 50)
+                        .frame(height: 80)
                     Color.black
                     LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                        .frame(height: 80)
+                        .frame(height: 120)
                 }
             )
             .onChange(of: viewModel.messages.last?.content) { _, _ in
                 proxy.scrollTo("bottom", anchor: .bottom)
-            }
-            // Glass shelf: gradient overlay sits on top of the masked scroll content,
-            // reinforcing the frosted-glass edge look.
-            // Top edge ignores safe area so it sits flush under the titlebar.
-            .overlay(alignment: .top) {
-                GlassEdge(atTop: true)
-                    .frame(height: 70)
-                    .ignoresSafeArea(edges: .top)
-                    .allowsHitTesting(false)
-            }
-            .overlay(alignment: .bottom) {
-                GlassEdge(atTop: false)
-                    .frame(height: 90)
-                    .allowsHitTesting(false)
             }
         }
     }
@@ -275,22 +278,7 @@ struct ChatView: View {
                 inputBottomBar
             }
             .frame(maxWidth: 960)
-            // Real frosted-glass blur + a tint for contrast
-            .background {
-                ZStack {
-                    Rectangle().fill(.ultraThinMaterial)
-                    Rectangle().fill(colorScheme == .dark ? Color.black.opacity(0.18) : Color.white.opacity(0.4))
-                }
-            }
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(Color.primary.opacity(colorScheme == .dark ? 0.28 : 0.15), lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .shadow(
-                color: colorScheme == .dark ? .black.opacity(0.3) : .black.opacity(0.08),
-                radius: 14, x: 0, y: 6
-            )
+            .glassEffect(.regular, in: .rect(cornerRadius: 16, style: .continuous))
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)

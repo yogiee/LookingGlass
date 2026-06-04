@@ -12,7 +12,7 @@ struct ToolCallCard: View {
                 detail
             }
         }
-        .elevatedSurface(cornerRadius: 10)
+        .glassEffect(.regular, in: .rect(cornerRadius: 10, style: .continuous))
     }
 
     private var header: some View {

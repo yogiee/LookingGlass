@@ -6,6 +6,7 @@ import AppKit
 /// `swift build` does not reliably compile `.xcassets` into an `Assets.car`,
 /// so `Image("name")` (which expects a compiled catalog) fails. We ship the
 /// avatar/background PNGs as loose resources and load them by hand instead.
+@MainActor
 enum Asset {
     private static var cache: [String: NSImage] = [:]
 

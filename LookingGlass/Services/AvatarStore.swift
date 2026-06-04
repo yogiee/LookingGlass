@@ -2,6 +2,7 @@ import AppKit
 
 /// Stores the user's custom avatar as a PNG in Application Support and serves
 /// it back with a small version-keyed cache so views don't hit disk every render.
+@MainActor
 enum AvatarStore {
     static var avatarURL: URL {
         let dir = FileManager.default

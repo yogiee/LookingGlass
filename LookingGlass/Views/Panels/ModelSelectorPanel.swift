@@ -74,7 +74,7 @@ struct ModelSelectorPanel: View {
                         isSelected: selectedModel.isEmpty,
                         onTap: { selectedModel = "" }
                     )
-                    Divider().padding(.leading, 14)
+                    Divider()
                     ForEach(models, id: \.self) { model in
                         ModelRow(
                             name: model,
@@ -83,7 +83,7 @@ struct ModelSelectorPanel: View {
                             isSelected: model == selectedModel,
                             onTap: { selectedModel = model }
                         )
-                        Divider().padding(.leading, 14)
+                        Divider()
                     }
                 }
             }

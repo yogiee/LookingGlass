@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "LookingGlass",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("26.0")],
     dependencies: [
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.0.0"),
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.0.0"),

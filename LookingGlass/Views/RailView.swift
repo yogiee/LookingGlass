@@ -8,8 +8,8 @@ struct RailView: View {
     private let topTabs: [RailTab] = [.chats, .tools, .models, .monitor]
 
     var body: some View {
-        VStack(spacing: 4) {
-            Spacer().frame(height: 10)
+        VStack(spacing: 12) {
+            Spacer().frame(height: 52)  // clear traffic-light area
 
             ForEach(topTabs, id: \.self) { tab in
                 RailButton(tab: tab, isActive: isActive(tab), onTap: { onSelect(tab) })
@@ -18,11 +18,11 @@ struct RailView: View {
             Spacer()
 
             RailButton(tab: .settings, isActive: isActive(.settings), onTap: { onSelect(.settings) })
-            Spacer().frame(height: 14)
+            Spacer().frame(height: 20)
         }
-        .frame(width: 80)
+        .frame(width: 76)
         .frame(maxHeight: .infinity)
-        .background(Color.black.opacity(0.22), ignoresSafeAreaEdges: .all)
+        // Transparent — backdrop / desktop shows through behind the buttons
     }
 
     private func isActive(_ tab: RailTab) -> Bool {
@@ -38,26 +38,19 @@ struct RailButton: View {
 
     var body: some View {
         Button(action: onTap) {
-            ZStack {
-                // Active / hover background
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(isActive
-                          ? Color.accentColor.opacity(0.18)
-                          : (isHovering ? Color.white.opacity(0.08) : Color.clear))
-                    .frame(width: 50, height: 50)
-
-                Image(systemName: tab.icon)
-                    .font(.system(size: 20, weight: isActive ? .semibold : .regular))
-                    .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-            }
-            .frame(width: 50, height: 50)
-            // contentShape ensures the full 50×50 area is hit-testable even with a clear background
-            .contentShape(RoundedRectangle(cornerRadius: 10))
+            Image(systemName: tab.icon)
+                .font(.system(size: 18, weight: isActive ? .semibold : .regular))
+                .foregroundStyle(isActive ? Color.primary : Color.secondary)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .focusEffectDisabled()
+        .glassEffect(.regular, in: Circle())
+        .scaleEffect(isActive ? 1.15 : (isHovering ? 1.05 : 1.0))
+        .brightness(isActive ? 0.15 : 0.0)
+        .animation(.spring(duration: 0.2, bounce: 0.3), value: isActive)
+        .animation(.easeInOut(duration: 0.12), value: isHovering)
         .help(tab.label)
         .onHover { isHovering = $0 }
-        .animation(.easeInOut(duration: 0.12), value: isHovering)
     }
 }
