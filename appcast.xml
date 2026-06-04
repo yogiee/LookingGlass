@@ -6,6 +6,29 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.6.0</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.6.0 — UI Polish</h3>
+        <ul>
+          <li>Scroll-edge blur: message bubbles genuinely defocus as they approach the top/bottom edges (real Gaussian blur via .scrollTransition, not just a fade)</li>
+          <li>Sidebar font sizes bumped +2pt across the board — titles are now 24pt heading-weight, chat rows and previews are more readable</li>
+          <li>Model panel: larger model names (16pt) and badge text (14pt)</li>
+          <li>Panel header avatar alignment fixed — no more 2px vertical shift when switching panels</li>
+          <li>Glass edge zones tightened: top 70px / bottom 90px with a dead-zone that keeps blur close to the edge</li>
+        </ul>
+        <p>Requires Ollama and Homebrew Python on the host.</p>
+      ]]></description>
+      <pubDate>Thu, 04 Jun 2026 13:30:00 +0530</pubDate>
+      <sparkle:version>6</sparkle:version>
+      <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.6.0/LookingGlass.dmg"
+        sparkle:edSignature="rq+NMqQix8BKBr3gQ8fo4qRrPWVC41NsSx3kGQP1EAOEZIiQYYfm6aaZ4wMMJT/OeeIMyOFJ7wzAWRhkwCp6BA=="
+        length="48719708"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.5.0</title>
       <description><![CDATA[
         <h3>Looking Glass 0.5.0</h3>
