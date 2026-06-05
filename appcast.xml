@@ -6,6 +6,24 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.7.1</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.7.1 — Bugfix</h3>
+        <ul>
+          <li>Fixed: right-clicking a project and choosing "Edit Project…" showed a blank sheet instead of the edit form</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 05 Jun 2026 20:00:00 +0530</pubDate>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>0.7.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.7.1/LookingGlass.dmg"
+        sparkle:edSignature="9HqKgG8dE4us+ztPwVrSI+vyWRyHnwtxOC8ahB6KhGu+Wca/lNS2CIiiPkPo5Jj3FrRkxAmGejlG8p3NNFd3Bg=="
+        length="50578924"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.7.0</title>
       <description><![CDATA[
         <h3>Looking Glass 0.7.0 — Tool Calls, System Monitor polish, Project colors</h3>
