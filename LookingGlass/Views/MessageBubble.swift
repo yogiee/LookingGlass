@@ -227,6 +227,13 @@ struct AvatarView: View {
     var size: CGFloat = 30
     @AppStorage("userAvatarVersion") private var userAvatarVersion = 0
 
+    @AppStorage("userName") private var userName = ""
+
+    private var initials: String {
+        let n = userName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return n.isEmpty ? "Y" : String(n.prefix(1).uppercased())
+    }
+
     var body: some View {
         Group {
             if role == .assistant {
@@ -240,7 +247,7 @@ struct AvatarView: View {
                 Circle()
                     .fill(Color.accentColor)
                     .overlay(
-                        Text("Y")
+                        Text(initials)
                             .font(.system(size: size * 0.42, weight: .bold))
                             .foregroundStyle(.white)
                     )

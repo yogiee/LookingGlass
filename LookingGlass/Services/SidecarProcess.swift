@@ -104,6 +104,12 @@ class SidecarProcess: ObservableObject {
         status = .stopped
     }
 
+    /// Stop the current sidecar and start a fresh one. Used after MCP config changes.
+    func restart() {
+        stop()
+        start()
+    }
+
     /// Terminate any LookingGlass sidecar already LISTENing on our port (a stale
     /// orphan from a prior crash/force-quit). SIGTERM, brief wait, then SIGKILL.
     private func reapStaleSidecar() {

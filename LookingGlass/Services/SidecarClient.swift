@@ -1,5 +1,27 @@
 import Foundation
 
+// MARK: - Domain models for Settings
+
+struct SkillItem: Identifiable, Equatable {
+    let id: String      // folder name
+    let name: String    // display name from frontmatter
+    let description: String
+    let whenToUse: String
+    let folder: String
+}
+
+struct MCPServerItem: Identifiable, Equatable {
+    let id: String  // name
+    let name: String
+    let command: String
+    let args: [String]
+    let source: String  // "config" or "user"
+}
+
+enum MCPConnectionStatus: String {
+    case connected, failed, unknown
+}
+
 enum ChatEvent {
     case contentDelta(String)
     case toolCallStart(id: String, tool: String, argsJSON: String)
@@ -33,7 +55,8 @@ class SidecarClient {
         ollamaHost: String,
         enabledTools: [String]?,
         systemPrompt: String?,
-        projectDir: String?
+        projectDir: String?,
+        userName: String? = nil
     ) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -55,10 +78,10 @@ class SidecarClient {
                     if let systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         body["system_prompt"] = systemPrompt
                     }
-                    // Project folder (when the chat belongs to a project). The sidecar
-                    // reads project.toml/guidelines.md and scopes tools to it. Swift
-                    // only sends the path — it never inspects the folder's contents.
                     if let projectDir { body["project_dir"] = projectDir }
+                    if let userName, !userName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        body["user_name"] = userName
+                    }
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -180,6 +203,109 @@ class SidecarClient {
                 dangerous: dict["dangerous"] as? Bool ?? false
             )
         }
+    }
+
+    // MARK: - Skills
+
+    func fetchSkills() async -> [SkillItem] {
+        guard let url = URL(string: "\(baseURL)/skills"),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arr = json["skills"] as? [[String: Any]]
+        else { return [] }
+        return arr.compactMap { d in
+            guard let name = d["name"] as? String else { return nil }
+            return SkillItem(
+                id: d["folder"] as? String ?? name,
+                name: name,
+                description: d["description"] as? String ?? "",
+                whenToUse: d["when_to_use"] as? String ?? "",
+                folder: d["folder"] as? String ?? name
+            )
+        }
+    }
+
+    @discardableResult
+    func importSkill(folderName: String, content: String) async -> Bool {
+        guard let url = URL(string: "\(baseURL)/skills/import") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["name": folderName, "content": content])
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return (json["success"] as? Bool) ?? false
+    }
+
+    @discardableResult
+    func deleteSkill(folderName: String) async -> Bool {
+        guard let url = URL(string: "\(baseURL)/skills/\(folderName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? folderName)") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return (json["success"] as? Bool) ?? false
+    }
+
+    // MARK: - MCP Servers
+
+    func fetchMCPStatus() async -> [String: String] {
+        guard let url = URL(string: "\(baseURL)/mcp/status"),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let servers = json["servers"] as? [String: String]
+        else { return [:] }
+        return servers
+    }
+
+    func fetchMCPServers() async -> [MCPServerItem] {
+        guard let url = URL(string: "\(baseURL)/mcp/servers"),
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arr = json["servers"] as? [[String: Any]]
+        else { return [] }
+        return arr.compactMap { d in
+            guard let name = d["name"] as? String else { return nil }
+            let args = d["args"] as? [String] ?? []
+            return MCPServerItem(
+                id: name,
+                name: name,
+                command: d["command"] as? String ?? "",
+                args: args,
+                source: d["source"] as? String ?? "config"
+            )
+        }
+    }
+
+    @discardableResult
+    func addMCPServer(name: String, command: String, args: [String], env: [String: String]) async -> Bool {
+        guard let url = URL(string: "\(baseURL)/mcp/servers") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["name": name, "command": command, "args": args, "env": env]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return (json["success"] as? Bool) ?? false
+    }
+
+    @discardableResult
+    func deleteMCPServer(name: String) async -> Bool {
+        guard let url = URL(string: "\(baseURL)/mcp/servers/\(name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name)") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false }
+        return (json["success"] as? Bool) ?? false
     }
 
     private static func prettyJSON(_ value: Any?) -> String {

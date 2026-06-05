@@ -1,10 +1,11 @@
 import json
+import shutil
 import tomllib
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -15,11 +16,25 @@ from tools.context import reset_project_dir, set_project_dir
 from tools.registry import ToolRegistry
 
 BASE_DIR = Path(__file__).parent
+MCP_USER_FILE = BASE_DIR / "mcp_user_servers.json"
 
 
 def load_config() -> dict:
     with open(BASE_DIR / "config.toml", "rb") as f:
         return tomllib.load(f)
+
+
+def load_user_mcp_servers() -> list[dict]:
+    if not MCP_USER_FILE.is_file():
+        return []
+    try:
+        return json.loads(MCP_USER_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def save_user_mcp_servers(servers: list[dict]) -> None:
+    MCP_USER_FILE.write_text(json.dumps(servers, indent=2), encoding="utf-8")
 
 
 config = load_config()
@@ -52,9 +67,12 @@ async def lifespan(app: FastAPI):
     print(f"[sidecar] Ollama: {agent_config.ollama_host}")
     print(f"[sidecar] Tools: {', '.join(registry.names())}")
 
-    mcp_servers = config.get("mcp", {}).get("servers", [])
-    if mcp_servers:
-        await registry.discover_mcp(mcp_servers)
+    config_servers = config.get("mcp", {}).get("servers", [])
+    user_servers = load_user_mcp_servers()
+    config_names = {s.get("name") for s in config_servers}
+    all_mcp = config_servers + [s for s in user_servers if s.get("name") not in config_names]
+    if all_mcp:
+        await registry.discover_mcp(all_mcp)
         print(f"[sidecar] All tools: {', '.join(registry.names())}")
 
     yield
@@ -86,6 +104,7 @@ class ChatRequest(BaseModel):
     system_prompt: str | None = None
     project_dir: str | None = None     # absolute project folder, or None for independent chats
     working_dir: str | None = None     # tool output scope; sidecar derives it when absent
+    user_name: str | None = None       # prepended to system prompt as "The user's name is X."
 
 
 def _host_for(override: str | None) -> str:
@@ -127,6 +146,101 @@ async def tools():
     return {"tools": registry.describe_all()}
 
 
+# MARK: - Skills
+
+@app.get("/skills")
+async def list_skills():
+    from skill_loader import all_skills
+    skills = all_skills()
+    return {"skills": [
+        {
+            "name": s.name,
+            "description": s.description,
+            "when_to_use": s.when_to_use,
+            "folder": s.path.parent.name,
+        }
+        for s in skills
+    ]}
+
+
+class SkillImportRequest(BaseModel):
+    name: str       # folder name (slugified)
+    content: str    # full SKILL.md text
+
+
+@app.post("/skills/import")
+async def import_skill(req: SkillImportRequest):
+    from skill_loader import SKILLS_DIR
+    safe_name = req.name.strip().replace("/", "_").replace("..", "_") or "unnamed"
+    skill_dir = SKILLS_DIR / safe_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(req.content, encoding="utf-8")
+    return {"success": True, "name": safe_name}
+
+
+@app.delete("/skills/{folder_name}")
+async def delete_skill(folder_name: str):
+    from skill_loader import SKILLS_DIR
+    skill_dir = SKILLS_DIR / folder_name
+    if not skill_dir.is_dir():
+        raise HTTPException(status_code=404, detail="Skill not found")
+    shutil.rmtree(skill_dir)
+    return {"success": True}
+
+
+# MARK: - MCP Servers
+
+@app.get("/mcp/status")
+async def mcp_status():
+    return {"servers": registry.mcp_status()}
+
+
+@app.get("/mcp/servers")
+async def mcp_servers():
+    config_servers = config.get("mcp", {}).get("servers", [])
+    user_servers = load_user_mcp_servers()
+    config_names = {s.get("name") for s in config_servers}
+    result = [{"source": "config", **s} for s in config_servers]
+    for s in user_servers:
+        if s.get("name") not in config_names:
+            result.append({"source": "user", **s})
+    return {"servers": result}
+
+
+class MCPServerAdd(BaseModel):
+    name: str
+    command: str
+    args: list[str] = []
+    env: dict[str, str] = {}
+
+
+@app.post("/mcp/servers")
+async def add_mcp_server(server: MCPServerAdd):
+    servers = load_user_mcp_servers()
+    servers = [s for s in servers if s.get("name") != server.name]
+    servers.append({
+        "name": server.name,
+        "command": server.command,
+        "args": server.args,
+        "env": server.env,
+    })
+    save_user_mcp_servers(servers)
+    return {"success": True, "restart_required": True}
+
+
+@app.delete("/mcp/servers/{name}")
+async def delete_mcp_server(name: str):
+    servers = load_user_mcp_servers()
+    before = len(servers)
+    servers = [s for s in servers if s.get("name") != name]
+    if len(servers) == before:
+        raise HTTPException(status_code=404, detail="Server not found in user config")
+    save_user_mcp_servers(servers)
+    return {"success": True, "restart_required": True}
+
+
+# MARK: - Memory
+
 class MemorySaveRequest(BaseModel):
     title: str
     content: str
@@ -152,6 +266,8 @@ async def memory_save(request: MemorySaveRequest):
         reset_project_dir(token)
 
 
+# MARK: - Chat
+
 @app.post("/chat")
 async def chat(request: ChatRequest):
     # Model is resolved inside chat_stream (explicit pick → project default →
@@ -170,6 +286,7 @@ async def chat(request: ChatRequest):
                 system_prompt=request.system_prompt,
                 project_dir=request.project_dir,
                 working_dir=request.working_dir,
+                user_name=request.user_name,
             ):
                 yield {"data": json.dumps(event)}
         except Exception as e:

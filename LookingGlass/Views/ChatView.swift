@@ -23,7 +23,7 @@ class ChatViewModel: ObservableObject {
         messages = conversationID.map { store.loadMessages($0) } ?? []
     }
 
-    func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?, store: ConversationStore, attachmentPath: String? = nil) {
+    func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?, userName: String?, store: ConversationStore, attachmentPath: String? = nil) {
         let typed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         let text: String
         if let path = attachmentPath {
@@ -77,7 +77,8 @@ class ChatViewModel: ObservableObject {
                     ollamaHost: ollamaHost,
                     enabledTools: enabledTools,
                     systemPrompt: systemPrompt,
-                    projectDir: projectDir
+                    projectDir: projectDir,
+                    userName: userName
                 ) {
                     guard !Task.isCancelled else { break }
                     apply(event)
@@ -143,6 +144,7 @@ struct ChatView: View {
     @Environment(\.chatLineHeight) private var lineHeight
 
     @AppStorage("selectedModel") private var selectedModel = ""   // "" = Auto (sidecar resolves)
+    @AppStorage("userName") private var userName = ""
     @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
     @AppStorage("systemPrompt") private var systemPrompt = ""
@@ -201,6 +203,7 @@ struct ChatView: View {
             ollamaHost: ollamaHost,
             enabledTools: decodedEnabledTools(),
             systemPrompt: systemPrompt.isEmpty ? nil : systemPrompt,
+            userName: userName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : userName,
             store: store,
             attachmentPath: attachment?.path
         )

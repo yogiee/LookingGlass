@@ -49,6 +49,7 @@ async def chat_stream(
     system_prompt: str | None = None,
     project_dir: str | None = None,
     working_dir: str | None = None,
+    user_name: str | None = None,
 ) -> AsyncIterator[dict]:
     """Agentic loop:
 
@@ -83,6 +84,8 @@ async def chat_stream(
     )
 
     base_prompt = system_prompt if (system_prompt and system_prompt.strip()) else config.system_prompt
+    if user_name and user_name.strip():
+        base_prompt = f"The user's name is {user_name.strip()}.\n\n" + base_prompt
 
     # Output scope: explicit working_dir → project folder → independent Inbox.
     scope = working_dir or project_dir

@@ -28,13 +28,11 @@ struct EditProjectSheet: View {
                 .font(.title2.weight(.semibold))
 
             field("Name") {
-                TextField("Project name", text: $name)
-                    .textFieldStyle(.roundedBorder)
+                FocusedTextField("Project name", text: $name)
             }
 
             field("Description") {
-                TextField("Optional — what this project is about", text: $description)
-                    .textFieldStyle(.roundedBorder)
+                FocusedTextField("Optional — what this project is about", text: $description)
             }
 
             field("Color") {

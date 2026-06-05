@@ -140,6 +140,7 @@ struct RootView: View {
                 .environmentObject(toolCallStore)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .focusEffectDisabled()
         .ignoresSafeArea()  // let padding(.vertical,8) measure from actual window edges
         .frame(minWidth: 900, minHeight: 500)
         .background {

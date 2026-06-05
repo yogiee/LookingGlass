@@ -6,6 +6,30 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.7.5</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.7.5 — Settings &amp; Polish</h3>
+        <ul>
+          <li>Settings panel restructured into five tabs: Style, System, Skills, MCP, About</li>
+          <li>Skills management: import .md skill files, list and delete skills from the UI</li>
+          <li>MCP Servers management: add/remove servers, live status dots, restart banner</li>
+          <li>User name field: Alice addresses you by name; avatar initials update to match</li>
+          <li>Focus field polish: consistent glass-material border animation across all inputs and search bars</li>
+          <li>System focus rings suppressed app-wide — no more blue halos on buttons at launch</li>
+          <li>Project settings button updated to folder icon</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 05 Jun 2026 23:00:00 +0530</pubDate>
+      <sparkle:version>11</sparkle:version>
+      <sparkle:shortVersionString>0.7.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.7.5/LookingGlass.dmg"
+        sparkle:edSignature="Q1QiDF1AZwlVFTWmEdPaLDLHK2NagTUxmiqcBxNf/bJbNYVYFLk/81otb/9ZYQwQdjLHhH5peReTjuSNfpPJDg=="
+        length="50688766"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.7.2</title>
       <description><![CDATA[
         <h3>Looking Glass 0.7.2 — Performance fix</h3>

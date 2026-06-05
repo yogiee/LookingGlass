@@ -20,6 +20,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ChatFont.registerBundled()
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // Prevent any button from getting the blue focus ring on launch.
+        DispatchQueue.main.async {
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
         // `swift run` produces a bare executable (no .app bundle / Info.plist),
         // so the asset-catalog AppIcon never applies. Set the Dock icon at runtime.
         if let icon = Asset.nsImage("appicon") {

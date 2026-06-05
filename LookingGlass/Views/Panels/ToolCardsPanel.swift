@@ -104,11 +104,11 @@ struct ToolCardsPanel: View {
         .background(.regularMaterial, in: .rect(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(searchFocused ? Color.primary.opacity(0.05) : Color.clear)
+                .fill(searchFocused ? Color.primary.opacity(0.07) : Color.clear)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(searchFocused ? 0.22 : 0.10), lineWidth: 0.5)
+                .strokeBorder(Color.primary.opacity(searchFocused ? 0.25 : 0.15), lineWidth: 0.5)
         )
         .animation(.easeInOut(duration: 0.15), value: searchFocused)
         .padding(.horizontal, 14)

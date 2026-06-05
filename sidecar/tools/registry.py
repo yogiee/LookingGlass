@@ -20,6 +20,7 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
         self._mcp_connections: list = []   # McpConnection objects
+        self._mcp_status: dict[str, str] = {}  # name → "connected" | "failed"
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -78,9 +79,14 @@ class ToolRegistry:
                 for mcp_tool in conn.tools:
                     self.register(_wrap_mcp_tool(conn, mcp_tool))
                 self._mcp_connections.append(conn)
+                self._mcp_status[name] = "connected"
                 print(f"[mcp] {name}: connected ({len(conn.tools)} tools)")
             except Exception as exc:
+                self._mcp_status[name] = "failed"
                 print(f"[mcp] {name}: failed to start — {exc}")
+
+    def mcp_status(self) -> dict[str, str]:
+        return dict(self._mcp_status)
 
     async def shutdown(self) -> None:
         """Stop all MCP server connections. Called on sidecar shutdown."""

@@ -26,13 +26,11 @@ struct NewProjectSheet: View {
                 .font(.title2.weight(.semibold))
 
             field("Name") {
-                TextField("Thesis Lit Review", text: $name)
-                    .textFieldStyle(.roundedBorder)
+                FocusedTextField("Thesis Lit Review", text: $name)
             }
 
             field("Description") {
-                TextField("Optional — what this project is about", text: $description)
-                    .textFieldStyle(.roundedBorder)
+                FocusedTextField("Optional — what this project is about", text: $description)
             }
 
             field("Folder") {
@@ -55,14 +53,12 @@ struct NewProjectSheet: View {
             }
 
             field("Guidelines") {
-                TextEditor(text: $guidelines)
-                    .font(.system(size: 12, design: .monospaced))
-                    .frame(height: 84)
-                    .padding(4)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-                    )
+                FocusedTextEditor(
+                    text: $guidelines,
+                    font: .system(size: 12, design: .monospaced),
+                    minHeight: 84,
+                    placeholder: "Optional — extra instructions appended to Alice's prompt."
+                )
                 Text("Optional — extra instructions appended to Alice's prompt in this project.")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)

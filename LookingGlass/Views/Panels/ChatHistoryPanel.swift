@@ -90,7 +90,7 @@ struct ChatHistoryPanel: View {
             Button {
                 projectToEdit = project
             } label: {
-                Image(systemName: "pencil").font(.system(size: 15))
+                Image(systemName: "folder.badge.gearshape").font(.system(size: 15))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
@@ -160,11 +160,11 @@ struct ChatHistoryPanel: View {
         .background(.regularMaterial, in: .rect(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(searchFocused ? Color.primary.opacity(0.05) : Color.clear)
+                .fill(searchFocused ? Color.primary.opacity(0.07) : Color.clear)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.primary.opacity(searchFocused ? 0.22 : 0.10), lineWidth: 0.5)
+                .strokeBorder(Color.primary.opacity(searchFocused ? 0.25 : 0.15), lineWidth: 0.5)
         )
         .animation(.easeInOut(duration: 0.15), value: searchFocused)
         .padding(.horizontal, 14)
