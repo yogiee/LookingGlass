@@ -36,6 +36,7 @@ class McpConnection:
         self._extra_env = env or {}
 
         self._tools: list = []
+        self._prompts: list = []
         self._initialized = asyncio.Event()
         self._init_error: Exception | None = None
         self._queue: asyncio.Queue = asyncio.Queue()
@@ -58,7 +59,16 @@ class McpConnection:
             raise RuntimeError(f"MCP server '{self.name}' is not running.")
         loop = asyncio.get_event_loop()
         fut: asyncio.Future = loop.create_future()
-        await self._queue.put((tool_name, arguments, fut))
+        await self._queue.put(("tool", tool_name, arguments, fut))
+        return await fut
+
+    async def get_prompt(self, prompt_name: str, arguments: dict | None = None):
+        """Fetch a prompt from this server; returns the mcp GetPromptResult."""
+        if self._task is None or self._task.done():
+            raise RuntimeError(f"MCP server '{self.name}' is not running.")
+        loop = asyncio.get_event_loop()
+        fut: asyncio.Future = loop.create_future()
+        await self._queue.put(("prompt", prompt_name, arguments or {}, fut))
         return await fut
 
     async def stop(self) -> None:
@@ -73,6 +83,10 @@ class McpConnection:
     @property
     def tools(self) -> list:
         return self._tools
+
+    @property
+    def prompts(self) -> list:
+        return self._prompts
 
     # ------------------------------------------------------------------
     # Internal
@@ -91,12 +105,20 @@ class McpConnection:
                     await session.initialize()
                     result = await session.list_tools()
                     self._tools = result.tools
+                    try:
+                        prompts_result = await session.list_prompts()
+                        self._prompts = prompts_result.prompts
+                    except Exception:
+                        self._prompts = []
                     self._initialized.set()
 
                     while True:
-                        tool_name, arguments, fut = await self._queue.get()
+                        call_type, name, arguments, fut = await self._queue.get()
                         try:
-                            r = await session.call_tool(tool_name, arguments)
+                            if call_type == "tool":
+                                r = await session.call_tool(name, arguments)
+                            else:  # "prompt"
+                                r = await session.get_prompt(name, arguments)
                             if not fut.done():
                                 fut.set_result(r)
                         except Exception as exc:

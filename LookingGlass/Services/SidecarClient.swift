@@ -16,6 +16,9 @@ struct MCPServerItem: Identifiable, Equatable {
     let command: String
     let args: [String]
     let source: String  // "config" or "user"
+    let prompts: [[String: String]]  // [{name, description}] — empty when server has no prompts
+
+    var hasPrompts: Bool { !prompts.isEmpty }
 }
 
 enum MCPConnectionStatus: String {
@@ -56,7 +59,9 @@ class SidecarClient {
         enabledTools: [String]?,
         systemPrompt: String?,
         projectDir: String?,
-        userName: String? = nil
+        userName: String? = nil,
+        mcpHintsEnabled: [String: Bool]? = nil,
+        researchMode: Bool = false
     ) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -82,6 +87,10 @@ class SidecarClient {
                     if let userName, !userName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         body["user_name"] = userName
                     }
+                    if let mcpHintsEnabled, !mcpHintsEnabled.isEmpty {
+                        body["mcp_hints_enabled"] = mcpHintsEnabled
+                    }
+                    if researchMode { body["research_mode"] = true }
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -271,12 +280,14 @@ class SidecarClient {
         return arr.compactMap { d in
             guard let name = d["name"] as? String else { return nil }
             let args = d["args"] as? [String] ?? []
+            let prompts = (d["prompts"] as? [[String: String]]) ?? []
             return MCPServerItem(
                 id: name,
                 name: name,
                 command: d["command"] as? String ?? "",
                 args: args,
-                source: d["source"] as? String ?? "config"
+                source: d["source"] as? String ?? "config",
+                prompts: prompts
             )
         }
     }

@@ -287,7 +287,7 @@ final class ConversationStore: ObservableObject {
             try Row.fetchAll(db, sql: """
                 SELECT c.id AS id, c.title AS title, c.updated_at AS updated_at,
                        (SELECT m.content FROM messages m
-                        WHERE m.conversation_id = c.id
+                        WHERE m.conversation_id = c.id AND m.content != ''
                         ORDER BY m.position DESC LIMIT 1) AS preview
                 FROM conversations c
                 WHERE \(whereClause)

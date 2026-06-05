@@ -102,9 +102,11 @@ class ChatRequest(BaseModel):
     ollama_host: str | None = None
     enabled_tools: list[str] | None = None
     system_prompt: str | None = None
-    project_dir: str | None = None     # absolute project folder, or None for independent chats
-    working_dir: str | None = None     # tool output scope; sidecar derives it when absent
-    user_name: str | None = None       # prepended to system prompt as "The user's name is X."
+    project_dir: str | None = None          # absolute project folder, or None for independent chats
+    working_dir: str | None = None          # tool output scope; sidecar derives it when absent
+    user_name: str | None = None            # prepended to system prompt as "The user's name is X."
+    mcp_hints_enabled: dict[str, bool] | None = None  # per-server MCP prompt injection toggle
+    research_mode: bool = False               # forces deep-research skill + 27B model
 
 
 def _host_for(override: str | None) -> str:
@@ -200,10 +202,12 @@ async def mcp_servers():
     config_servers = config.get("mcp", {}).get("servers", [])
     user_servers = load_user_mcp_servers()
     config_names = {s.get("name") for s in config_servers}
-    result = [{"source": "config", **s} for s in config_servers]
+    prompts_index = registry.mcp_prompts_index()
+    result = [{"source": "config", "prompts": prompts_index.get(s.get("name"), []), **s}
+              for s in config_servers]
     for s in user_servers:
         if s.get("name") not in config_names:
-            result.append({"source": "user", **s})
+            result.append({"source": "user", "prompts": prompts_index.get(s.get("name"), []), **s})
     return {"servers": result}
 
 
@@ -287,6 +291,8 @@ async def chat(request: ChatRequest):
                 project_dir=request.project_dir,
                 working_dir=request.working_dir,
                 user_name=request.user_name,
+                mcp_hints_enabled=request.mcp_hints_enabled,
+                research_mode=request.research_mode,
             ):
                 yield {"data": json.dumps(event)}
         except Exception as e:

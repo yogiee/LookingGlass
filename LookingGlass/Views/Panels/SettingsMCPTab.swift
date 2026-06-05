@@ -10,7 +10,19 @@ struct SettingsMCPTab: View {
     @State private var restartPending = false
     @State private var errorMessage: String? = nil
 
+    @AppStorage("mcpHintsEnabledJSON") private var mcpHintsEnabledJSON: String = "{}"
+
     private let client = SidecarClient()
+
+    private var mcpHintsEnabled: [String: Bool] {
+        (try? JSONDecoder().decode([String: Bool].self, from: Data(mcpHintsEnabledJSON.utf8))) ?? [:]
+    }
+
+    private func setHint(_ name: String, _ enabled: Bool) {
+        var dict = mcpHintsEnabled
+        dict[name] = enabled
+        mcpHintsEnabledJSON = (try? String(data: JSONEncoder().encode(dict), encoding: .utf8)) ?? "{}"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -126,6 +138,17 @@ struct SettingsMCPTab: View {
             }
 
             Spacer()
+
+            // Inject this server's usage hints into Alice's prompt (only when server has prompts)
+            if server.hasPrompts {
+                Toggle("", isOn: Binding(
+                    get: { mcpHintsEnabled[server.name] ?? false },
+                    set: { setHint(server.name, $0) }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help("Inject \(server.name) usage instructions into Alice's system prompt")
+            }
 
             // Only user-added servers can be deleted via UI
             if server.source == "user" {

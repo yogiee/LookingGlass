@@ -20,12 +20,16 @@ keep_alive = "5m"
 
 # Mode-aware routing table (Step 5). Mirrors the [models] section in project.toml.
 # Used for independent (non-project) chats; projects can override per-mode in their
-# own project.toml. Benchmark 2026-06-03: gemma4:latest is the fast-research +
-# tool-heavy dark horse; qwen3.6:27b-mlx is max-nuance at 16 tok/s (MLX scales).
+# own project.toml.
+# Research model: benchmarked 27b-mlx at 16 tok/s but live deep-research runs (multi-
+# tool, long context) on M1 Max 32GB hit 5-10s/word due to RAM pressure — impractical.
+# The deep-research SKILL.md playbook provides the quality via process (structured multi-
+# search, source reading, synthesis), not raw model size. 9b-mlx at 10x speed produces
+# 80% of the depth. Select 27b manually via Settings → Model when max depth is worth it.
 [models]
 default  = "qwen3.5:9b-mlx"
 coding   = "gemma4:latest"
-research = "qwen3.6:27b-mlx"
+research = "gemma4:latest"
 
 [server]
 port = 8765
@@ -33,7 +37,7 @@ host = "127.0.0.1"
 
 [agent]
 system_prompt_path = "prompts/alice.md"
-max_turns = 10
+max_turns = 20
 
 # MCP servers — each entry is spawned at startup (stdio transport).
 # Tools are auto-registered alongside builtins; Alice can call them directly.

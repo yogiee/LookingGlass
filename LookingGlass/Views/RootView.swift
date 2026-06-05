@@ -20,6 +20,19 @@ struct VibrancyBackground: NSViewRepresentable {
     }
 }
 
+/// Transparent overlay that tells AppKit "don't drag the window from here."
+/// Place as .background() on any content area where text selection is needed.
+/// The invisible title-bar strip (fullSizeContentView + titlebarAppearsTransparent)
+/// remains draggable because AppKit handles it separately via window chrome.
+private struct NoDragBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { _NoDragView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private class _NoDragView: NSView {
+        override var mouseDownCanMoveWindow: Bool { false }
+    }
+}
+
 struct WindowChromeConfigurator: NSViewRepresentable {
     let colorScheme: ColorScheme?
 
@@ -66,6 +79,7 @@ struct RootView: View {
 
     @StateObject private var systemMonitor = SystemMonitor()
     @StateObject private var toolCallStore = ToolCallStore()
+    @StateObject private var reportPanel = ReportPanelState()
 
     private var backgroundStyle: BackgroundStyle {
         BackgroundStyle(rawValue: backgroundStyleRaw) ?? .glass
@@ -140,6 +154,9 @@ struct RootView: View {
                 .environmentObject(toolCallStore)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .blur(radius: reportPanel.isVisible ? 6 : 0, opaque: false)
+        .animation(.easeInOut(duration: 0.28), value: reportPanel.isVisible)
+        .background(NoDragBackground())
         .focusEffectDisabled()
         .ignoresSafeArea()  // let padding(.vertical,8) measure from actual window edges
         .frame(minWidth: 900, minHeight: 500)
@@ -150,6 +167,19 @@ struct RootView: View {
         .preferredColorScheme(preferredColorScheme)
         .environment(\.chatFontSize, fontSize)
         .environment(\.chatLineHeight, lineHeight)
+        .environmentObject(reportPanel)
+        // Full-window report panel overlay — covers rail + sidebar + chat
+        .overlay {
+            if reportPanel.isVisible, let path = reportPanel.path {
+                ResearchReportPanel(path: path, fontSize: fontSize, lineHeight: lineHeight) {
+                    withAnimation(.easeInOut(duration: 0.28)) { reportPanel.dismiss() }
+                }
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+                .ignoresSafeArea()
+                .zIndex(100)
+            }
+        }
+        .animation(.easeInOut(duration: 0.28), value: reportPanel.isVisible)
         .task {
             sidecar.start()
             systemMonitor.ollamaHost = ollamaHost

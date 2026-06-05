@@ -13,7 +13,7 @@ async def _think(args: dict) -> dict:
 TOOLS = [
     Tool(
         name="think",
-        description="A private space to reason through a problem step by step before answering. Use this to plan, check assumptions, or work through multi-step logic. The content is not shown to the user as a normal reply.",
+        description="A scratchpad to reason through a problem step by step. Call think FIRST when a question needs careful planning. After think completes, ALWAYS write your actual answer to the user as regular text. Never end a turn with only a think call.",
         parameters={
             "type": "object",
             "properties": {

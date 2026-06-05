@@ -21,15 +21,18 @@ def _format(results: list[dict], source: str) -> str:
     return "\n".join(lines)
 
 
-async def _searxng(query: str, n: int) -> list[dict]:
+async def _searxng(query: str, n: int, time_range: str | None = None) -> list[dict]:
     base = os.environ.get("SEARXNG_URL")
     if not base:
         return []
     try:
+        params: dict = {"q": query, "format": "json"}
+        if time_range:
+            params["time_range"] = time_range
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(
                 f"{base.rstrip('/')}/search",
-                params={"q": query, "format": "json"},
+                params=params,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -122,15 +125,20 @@ async def _web_search(args: dict) -> dict:
     if not query:
         return err("Missing required argument: query")
     n = int(args.get("count", 5))
+    time_range = args.get("recency")  # day | week | month | year — SearXNG only
 
-    cascade = [
-        ("SearXNG", _searxng),
-        ("DuckDuckGo", _duckduckgo),
-        ("Brave", _brave),
-        ("Tavily", _tavily),
-    ]
-    for source, fn in cascade:
-        results = await fn(query, n)
+    # SearXNG supports recency filtering; other backends get it as a hint in the query.
+    if time_range and time_range not in ("day", "week", "month", "year"):
+        return err("recency must be one of: day, week, month, year")
+
+    results = await _searxng(query, n, time_range)
+    if results:
+        return ok(_format(results, "SearXNG"))
+
+    # For non-SearXNG backends, append a recency hint to the query string.
+    hinted = f"{query} after:{_recency_hint(time_range)}" if time_range else query
+    for source, fn in [("DuckDuckGo", _duckduckgo), ("Brave", _brave), ("Tavily", _tavily)]:
+        results = await fn(hinted, n)
         if results:
             return ok(_format(results, source))
 
@@ -138,6 +146,20 @@ async def _web_search(args: dict) -> dict:
         "No search results. No search backend is available — install 'ddgs' "
         "(pip install ddgs), run SearXNG (set SEARXNG_URL), or set BRAVE_API_KEY / TAVILY_API_KEY."
     )
+
+
+def _recency_hint(time_range: str | None) -> str:
+    from datetime import date, timedelta
+    today = date.today()
+    if time_range == "day":
+        d = today - timedelta(days=1)
+    elif time_range == "week":
+        d = today - timedelta(weeks=1)
+    elif time_range == "month":
+        d = today - timedelta(days=30)
+    else:  # year
+        d = today - timedelta(days=365)
+    return d.strftime("%Y-%m-%d")
 
 
 TOOLS = [
@@ -149,6 +171,11 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "The search query"},
                 "count": {"type": "integer", "description": "Number of results (default 5)"},
+                "recency": {
+                    "type": "string",
+                    "enum": ["day", "week", "month", "year"],
+                    "description": "Limit results to this time window. Use for current events, recent releases, or any query where freshness matters.",
+                },
             },
             "required": ["query"],
         },

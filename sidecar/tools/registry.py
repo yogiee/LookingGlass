@@ -20,7 +20,8 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
         self._mcp_connections: list = []   # McpConnection objects
-        self._mcp_status: dict[str, str] = {}  # name → "connected" | "failed"
+        self._mcp_status: dict[str, str] = {}   # name → "connected" | "failed"
+        self._mcp_prompts: dict[str, list[dict]] = {}  # name → [{name, description, text}]
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
@@ -77,16 +78,55 @@ class ToolRegistry:
             try:
                 await conn.start()
                 for mcp_tool in conn.tools:
-                    self.register(_wrap_mcp_tool(conn, mcp_tool))
+                    self.register(_wrap_mcp_tool(conn, mcp_tool, server_name=name))
+                # Cache prompts without required arguments — these are system-level
+                # usage hints that any host can inject into the active system prompt.
+                cached_prompts = []
+                for p in conn.prompts:
+                    has_required = any(
+                        getattr(a, "required", False)
+                        for a in (getattr(p, "arguments", None) or [])
+                    )
+                    if has_required:
+                        continue
+                    try:
+                        result = await conn.get_prompt(p.name, {})
+                        text = "\n\n".join(
+                            msg.content.text
+                            for msg in result.messages
+                            if hasattr(msg.content, "text") and msg.content.text
+                        )
+                        if text:
+                            cached_prompts.append({
+                                "name": p.name,
+                                "description": getattr(p, "description", "") or "",
+                                "text": text,
+                            })
+                    except Exception:
+                        pass
+                self._mcp_prompts[name] = cached_prompts
                 self._mcp_connections.append(conn)
                 self._mcp_status[name] = "connected"
-                print(f"[mcp] {name}: connected ({len(conn.tools)} tools)")
+                prompt_info = f", {len(cached_prompts)} prompts" if cached_prompts else ""
+                print(f"[mcp] {name}: connected ({len(conn.tools)} tools{prompt_info})")
             except Exception as exc:
                 self._mcp_status[name] = "failed"
                 print(f"[mcp] {name}: failed to start — {exc}")
 
     def mcp_status(self) -> dict[str, str]:
         return dict(self._mcp_status)
+
+    def mcp_prompts_for(self, server_name: str) -> list[dict]:
+        """Return cached prompts for a server — [{name, description, text}]."""
+        return self._mcp_prompts.get(server_name, [])
+
+    def mcp_prompts_index(self) -> dict[str, list[dict]]:
+        """All cached prompts keyed by server name, name/description only (no text)."""
+        return {
+            name: [{"name": p["name"], "description": p["description"]} for p in prompts]
+            for name, prompts in self._mcp_prompts.items()
+            if prompts
+        }
 
     async def shutdown(self) -> None:
         """Stop all MCP server connections. Called on sidecar shutdown."""
@@ -98,13 +138,18 @@ class ToolRegistry:
         self._mcp_connections.clear()
 
 
-def _wrap_mcp_tool(conn, mcp_tool) -> Tool:
-    """Wrap one MCP tool as a sidecar Tool with a proxying async handler."""
-    tool_name = mcp_tool.name
+def _wrap_mcp_tool(conn, mcp_tool, server_name: str = "") -> Tool:
+    """Wrap one MCP tool as a sidecar Tool with a proxying async handler.
+
+    Tools are registered as `{server_name}__{tool_name}` to avoid collisions
+    between MCP servers and builtins (e.g. both have `save_memory`).
+    """
+    raw_name = mcp_tool.name
+    prefixed_name = f"{server_name}__{raw_name}" if server_name else raw_name
 
     async def handler(args: dict) -> dict:
         try:
-            result = await conn.call_tool(tool_name, args)
+            result = await conn.call_tool(raw_name, args)
             text = "\n".join(
                 c.text for c in result.content if hasattr(c, "text") and c.text
             )
@@ -113,7 +158,7 @@ def _wrap_mcp_tool(conn, mcp_tool) -> Tool:
             return err(f"{type(exc).__name__}: {exc}")
 
     return Tool(
-        name=tool_name,
+        name=prefixed_name,
         description=mcp_tool.description or "",
         parameters=mcp_tool.inputSchema or {"type": "object", "properties": {}},
         handler=handler,

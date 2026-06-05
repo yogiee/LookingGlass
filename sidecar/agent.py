@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +51,8 @@ async def chat_stream(
     project_dir: str | None = None,
     working_dir: str | None = None,
     user_name: str | None = None,
+    mcp_hints_enabled: dict[str, bool] | None = None,
+    research_mode: bool = False,
 ) -> AsyncIterator[dict]:
     """Agentic loop:
 
@@ -76,7 +79,12 @@ async def chat_stream(
     # classify_mode inspects the last user message; project_model_for_mode consults
     # the project's [models] table first, then the global routing table.
     # When the user picks a specific model in Swift, `model` is set and we skip routing.
-    mode = classify_mode(messages) if model is None else "default"
+    # Research mode always routes to the research model regardless of message content.
+    # Explicit model picker still wins — user knows what they're doing.
+    if model is None and research_mode:
+        mode = "research"
+    else:
+        mode = classify_mode(messages) if model is None else "default"
     resolved_model = (
         model
         or project_model_for_mode(project_cfg, config.models, mode)
@@ -126,6 +134,32 @@ async def chat_stream(
                 "You saved these notes in earlier conversations. Call `recall_memory` "
                 "with a topic to read any of them in full.\n\n" + mem_index
             )
+    # MCP usage hints: each enabled server that advertised prompts contributes
+    # its guidance as a block. Injected after project context so Alice sees
+    # project-specific instructions first. Entirely opt-in per server.
+    if mcp_hints_enabled:
+        for server_name, enabled in mcp_hints_enabled.items():
+            if enabled:
+                for prompt in registry.mcp_prompts_for(server_name):
+                    parts.append(prompt["text"])
+
+    if research_mode:
+        # Inline the deep-research skill directly — skip the use_skill round-trip so the
+        # model starts turn 1 already knowing the plan and can go straight to web_search.
+        skill_path = Path(__file__).parent / "skills" / "deep-research" / "SKILL.md"
+        skill_body = skill_path.read_text() if skill_path.exists() else ""
+        parts.append(
+            "## Active mode: Deep Research\n"
+            "The user wants a thorough, multi-source research run — not a quick answer. "
+            "Follow the playbook below completely. Use web_search and read_page to gather "
+            "sources, synthesize a full report, and save it with file_write. "
+            "After saving, write a SHORT in-chat handoff (100–150 words): confirm you saved it, "
+            "give 3–4 bullet highlights of what you found, and invite them to review and ask for "
+            "corrections or deeper dives. Do NOT reproduce the full report in chat — they can "
+            "read it in the panel.\n\n"
+            + (f"### Research Playbook\n{skill_body}" if skill_body else "")
+        )
+
     guidelines = read_guidelines(project_dir)
     if guidelines:
         parts.append(guidelines)
@@ -136,7 +170,16 @@ async def chat_stream(
     oh_token = set_ollama_host(host)
 
     full: list[dict] = [{"role": "system", "content": active_prompt}] + messages
-    tool_schemas = registry.ollama_schemas(enabled_tools)
+
+    # Research mode: skill is already inlined in the prompt, so exclude use_skill.
+    # Leaving it enabled causes the model to call use_skill, output framing prose,
+    # and stop — wasting a turn and never reaching the first web_search.
+    if research_mode:
+        base = enabled_tools if enabled_tools is not None else registry.names()
+        effective_tools: list[str] | None = [n for n in base if n != "use_skill"]
+    else:
+        effective_tools = enabled_tools
+    tool_schemas = registry.ollama_schemas(effective_tools)
 
     total_in = 0
     total_out = 0
@@ -215,8 +258,27 @@ async def chat_stream(
                     yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
                     return
 
+                print(f"[agent] turn {turn}: {len(tool_calls)} tool call(s), {len(assistant_content)} chars text")
+
                 # No tools requested this turn → the model is done talking.
                 if not tool_calls:
+                    # Research mode catch: if the model wrote the report as prose instead
+                    # of calling file_write, auto-save it so the user still gets the file.
+                    if research_mode and len(assistant_content) > 1500:
+                        slug = re.sub(r"[^\w]+", "-", messages[-1].get("content", "report")[:40]).strip("-")
+                        slug = slug or f"report-{int(time.time())}"
+                        out_path = work_path / "research" / f"{slug}.md"
+                        out_path.parent.mkdir(parents=True, exist_ok=True)
+                        out_path.write_text(assistant_content, encoding="utf-8")
+                        print(f"[agent] research catch: auto-saved report to {out_path}")
+                        # Emit a fake file_write result so Swift detects the report path.
+                        tc_id = f"tc_{turn}_auto"
+                        yield {"type": "tool_call_start", "id": tc_id, "tool": "file_write",
+                               "args": {"path": str(out_path)}}
+                        yield {"type": "tool_call_result", "id": tc_id, "tool": "file_write",
+                               "success": True,
+                               "result": f"Wrote {out_path} ({len(assistant_content)} chars)",
+                               "latency_ms": 0}
                     yield {
                         "type": "message_end",
                         "usage": {"input_tokens": total_in, "output_tokens": total_out},
@@ -229,6 +291,19 @@ async def chat_stream(
                     "content": assistant_content,
                     "tool_calls": tool_calls,
                 })
+
+                # Internal tools (think, use_skill) sometimes cause the model to output
+                # framing prose on the next turn and stop instead of doing actual work.
+                tc_names = {tc.get("function", {}).get("name") for tc in tool_calls}
+                _internal = {"think", "use_skill"}
+                if tc_names and tc_names.issubset(_internal):
+                    if "use_skill" in tc_names:
+                        # After loading a skill, model must start the first step now.
+                        full.append({"role": "user",
+                                     "content": "Skill loaded. Start executing step 1 now — call the first tool immediately. No framing text."})
+                    elif not assistant_content:
+                        # After think with no text, nudge to produce the actual reply.
+                        full.append({"role": "user", "content": "Now write your answer."})
 
                 # Execute each tool, streaming start/result, and feed results back.
                 for i, tc in enumerate(tool_calls):
@@ -260,9 +335,18 @@ async def chat_stream(
                         "latency_ms": latency_ms,
                     }
 
+                    # Truncate before adding to history — full page reads (60KB) will
+                    # overflow the 16K token context window after just 2-3 tool calls.
+                    # The SSE stream already sent the full result to the client; the
+                    # model only needs enough to reason from, not to re-read the source.
+                    raw_result = result.get("result", "")
+                    history_result = (
+                        raw_result[:6_000] + "\n…[truncated for context window]"
+                        if len(raw_result) > 6_000 else raw_result
+                    )
                     full.append({
                         "role": "tool",
-                        "content": result.get("result", ""),
+                        "content": history_result,
                         "tool_name": name,
                     })
 

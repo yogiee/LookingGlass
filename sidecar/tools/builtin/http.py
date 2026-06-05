@@ -4,13 +4,20 @@ from ..base import Tool, ok, err
 
 MAX_BODY = 100_000
 
+_DEFAULT_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+    "Version/17.6 Safari/605.1.15"
+)
+
 
 async def _http_request(args: dict) -> dict:
     url = args.get("url")
     if not url:
         return err("Missing required argument: url")
     method = (args.get("method") or "GET").upper()
-    headers = args.get("headers") or {}
+    # Caller headers take precedence; default UA prevents 403s from sites like Wikipedia.
+    headers = {"User-Agent": _DEFAULT_UA, **(args.get("headers") or {})}
     body = args.get("body")
 
     try:
