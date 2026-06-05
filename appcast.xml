@@ -6,6 +6,29 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.0</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.0 — Deep Research</h3>
+        <ul>
+          <li>Deep Research mode: toggle in the input bar — Alice searches multiple sources, synthesizes a full cited report, and saves it as a markdown file</li>
+          <li>Research Report Panel: slide-in panel covers the full window with a blurred backdrop; font size and line height respect your Settings values; tap outside or press Escape to close</li>
+          <li>Live research progress: banner tracks each phase — "Searching the web (N)… → Reading sources (N)… → Saving report… → Report ready"</li>
+          <li>"View Report" button persists across sessions — if the file still exists, the button returns when you reopen the conversation</li>
+          <li>In-chat handoff: after saving, Alice gives a 100–150 word summary with highlights and invites corrections — full report stays in the panel</li>
+          <li>"Write that down": in normal chat, saying anything like "write that down" or "save this" triggers an immediate file_write from the conversation — no confirmation needed</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 06 Jun 2026 12:00:00 +0530</pubDate>
+      <sparkle:version>12</sparkle:version>
+      <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.0/LookingGlass.dmg"
+        sparkle:edSignature="lLKVF0uU+IJqq2X0CCo9o9yDJo2lre2yrmExK1blwcLOYTxokR7+HWD/DWXhNYWErdUKj+oSpWcRyvzMI7sHCg=="
+        length="50771537"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.7.5</title>
       <description><![CDATA[
         <h3>Looking Glass 0.7.5 — Settings &amp; Polish</h3>
