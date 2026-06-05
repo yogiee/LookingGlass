@@ -2,11 +2,19 @@ import SwiftUI
 import AppKit
 import MarkdownUI
 
-struct MessageBubble: View {
+struct MessageBubble: View, Equatable {
     let message: Message
     /// The active conversation's project folder, or nil for independent chats.
     /// When set, assistant messages get a "Save to memory" action.
     var projectDir: String? = nil
+
+    // Equatable: skip re-render when message content and streaming state are
+    // unchanged. chatTheme and glassEffect are expensive to recompute on every
+    // window resize — this prevents the main-thread stall on heavy markdown.
+    // Font/env changes still propagate because @Environment invalidates separately.
+    static func == (lhs: MessageBubble, rhs: MessageBubble) -> Bool {
+        lhs.message == rhs.message && lhs.projectDir == rhs.projectDir
+    }
     @Environment(\.chatFontSize) private var fontSize
     @Environment(\.chatLineHeight) private var lineHeight
     @AppStorage("chatFontChoice") private var chatFontChoiceRaw = ChatFontChoice.system.rawValue

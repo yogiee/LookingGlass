@@ -243,6 +243,7 @@ struct ChatView: View {
                     LazyVStack(alignment: .leading, spacing: 20) {
                         ForEach(viewModel.messages) { msg in
                             MessageBubble(message: msg, projectDir: projectDir)
+                                .equatable()
                                 .id(msg.id)
                         }
                         Color.clear.frame(height: inputReserve + 8).id("bottom")
