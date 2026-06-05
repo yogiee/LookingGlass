@@ -3,7 +3,6 @@ import SwiftUI
 struct ChatHistoryPanel: View {
     @EnvironmentObject private var store: ConversationStore
     @State private var showingNewProject = false
-    @State private var showingEditProject = false
     @State private var projectToEdit: ProjectListItem? = nil
     @State private var hoveringFolderBack = false
     @FocusState private var searchFocused: Bool
@@ -35,11 +34,9 @@ struct ChatHistoryPanel: View {
                                     folderURL: folder, guidelines: guidelines, color: color)
             }
         }
-        .sheet(isPresented: $showingEditProject) {
-            if let project = projectToEdit {
-                EditProjectSheet(project: project) { name, description, color in
-                    store.updateProject(id: project.id, name: name, description: description, color: color)
-                }
+        .sheet(item: $projectToEdit) { project in
+            EditProjectSheet(project: project) { name, description, color in
+                store.updateProject(id: project.id, name: name, description: description, color: color)
             }
         }
         // Clicking away from an open rename field commits it (Enter/Esc are
@@ -92,7 +89,6 @@ struct ChatHistoryPanel: View {
             Spacer()
             Button {
                 projectToEdit = project
-                showingEditProject = true
             } label: {
                 Image(systemName: "pencil").font(.system(size: 15))
             }
@@ -189,7 +185,6 @@ struct ChatHistoryPanel: View {
                             .contextMenu {
                                 Button("Edit Project…") {
                                     projectToEdit = project
-                                    showingEditProject = true
                                 }
                                 Divider()
                                 Button("Delete Project (keeps chats & files)", role: .destructive) {

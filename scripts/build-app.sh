@@ -17,8 +17,8 @@ BUILD_DIR="$PROJECT_DIR/build"
 APP_NAME="LookingGlass"          # bundle + binary name (no spaces)
 DISPLAY_NAME="Looking Glass"     # shown in Finder / Dock / menu bar
 BUNDLE_ID="com.yogi.LookingGlass"
-VERSION="0.7.0"
-BUILD_NUMBER="8"
+VERSION="0.7.1"
+BUILD_NUMBER="9"
 
 # Shared EdDSA public key for Sparkle (private key in Keychain, machine-bound).
 SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-k47OPDePNJN2Iyiu28Hz73RzNv/GHyryeSPWvGhv1+c=}"
