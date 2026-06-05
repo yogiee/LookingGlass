@@ -3,6 +3,12 @@ import SwiftUI
 struct ChatHistoryPanel: View {
     @EnvironmentObject private var store: ConversationStore
     @State private var showingNewProject = false
+    @State private var showingEditProject = false
+    @State private var projectToEdit: ProjectListItem? = nil
+    @State private var hoveringFolderBack = false
+    @FocusState private var searchFocused: Bool
+    @Environment(\.colorScheme) private var colorScheme
+    private var borderColor: Color { colorScheme == .dark ? .white : .black }
 
     /// Inline-rename state: which row is being edited and its working title.
     @State private var editingID: UUID?
@@ -24,9 +30,16 @@ struct ChatHistoryPanel: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $showingNewProject) {
-            NewProjectSheet { name, description, folder, guidelines in
+            NewProjectSheet { name, description, folder, guidelines, color in
                 store.createProject(name: name, description: description,
-                                    folderURL: folder, guidelines: guidelines)
+                                    folderURL: folder, guidelines: guidelines, color: color)
+            }
+        }
+        .sheet(isPresented: $showingEditProject) {
+            if let project = projectToEdit {
+                EditProjectSheet(project: project) { name, description, color in
+                    store.updateProject(id: project.id, name: name, description: description, color: color)
+                }
             }
         }
         // Clicking away from an open rename field commits it (Enter/Esc are
@@ -44,6 +57,7 @@ struct ChatHistoryPanel: View {
                 .scaledToFill()
                 .frame(width: 48, height: 48)
                 .clipShape(Circle())
+                .overlay(Circle().strokeBorder(borderColor, lineWidth: 2))
             Text("Looking Glass")
                 .font(.system(size: 24, weight: .semibold))
             Spacer()
@@ -68,20 +82,24 @@ struct ChatHistoryPanel: View {
 
     private func projectHeader(_ project: ProjectListItem) -> some View {
         HStack(spacing: 8) {
-            Button { store.exitProject() } label: {
-                Image(systemName: "chevron.left").font(.system(size: 15, weight: .semibold))
+            folderBackButton(color: project.resolvedColor)
+
+            Text(project.name)
+                .font(.system(size: 22, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(project.name)
+            Spacer()
+            Button {
+                projectToEdit = project
+                showingEditProject = true
+            } label: {
+                Image(systemName: "pencil").font(.system(size: 15))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Back to all chats")
+            .help("Edit project")
 
-            Image(systemName: "folder.fill")
-                .font(.system(size: 15))
-                .foregroundStyle(.secondary)
-            Text(project.name)
-                .font(.system(size: 24, weight: .semibold))
-                .lineLimit(1)
-            Spacer()
             Button { store.startNewChat() } label: {
                 Image(systemName: "square.and.pencil").font(.system(size: 17))
             }
@@ -94,6 +112,35 @@ struct ChatHistoryPanel: View {
         .padding(.bottom, 10)
     }
 
+    private func folderBackButton(color: Color) -> some View {
+        Circle()
+            .fill(color.opacity(0.15))
+            .frame(width: 48, height: 48)
+            .overlay(
+                Circle()
+                    .fill(Color.black.opacity(hoveringFolderBack ? 0.32 : 0))
+            )
+            .overlay(
+                ZStack {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(color)
+                        .opacity(hoveringFolderBack ? 0 : 1)
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .opacity(hoveringFolderBack ? 1 : 0)
+                }
+            )
+            .overlay(
+                Circle().strokeBorder(borderColor.opacity(0.75), lineWidth: 2)
+            )
+            .animation(.easeInOut(duration: 0.15), value: hoveringFolderBack)
+            .onHover { hoveringFolderBack = $0 }
+            .onTapGesture { store.exitProject() }
+            .help("Back to all chats")
+    }
+
     private var searchField: some View {
         HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
@@ -102,6 +149,7 @@ struct ChatHistoryPanel: View {
             TextField(inProjectView ? "Search this project" : "Search", text: $store.searchText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
+                .focused($searchFocused)
             if !store.searchText.isEmpty {
                 Button { store.searchText = "" } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -114,6 +162,15 @@ struct ChatHistoryPanel: View {
         .padding(.vertical, 8)
         .padding(.horizontal, 10)
         .background(.regularMaterial, in: .rect(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(searchFocused ? Color.primary.opacity(0.05) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.primary.opacity(searchFocused ? 0.22 : 0.10), lineWidth: 0.5)
+        )
+        .animation(.easeInOut(duration: 0.15), value: searchFocused)
         .padding(.horizontal, 14)
         .padding(.bottom, 10)
     }
@@ -130,6 +187,11 @@ struct ChatHistoryPanel: View {
                             .contentShape(Rectangle())
                             .onTapGesture { store.openProject(project.id) }
                             .contextMenu {
+                                Button("Edit Project…") {
+                                    projectToEdit = project
+                                    showingEditProject = true
+                                }
+                                Divider()
                                 Button("Delete Project (keeps chats & files)", role: .destructive) {
                                     store.deleteProject(project.id)
                                 }
@@ -261,7 +323,7 @@ struct ProjectRow: View {
         HStack(spacing: 10) {
             Image(systemName: "folder.fill")
                 .font(.system(size: 16))
-                .foregroundStyle(Color.accentColor.opacity(0.8))
+                .foregroundStyle(project.resolvedColor.opacity(0.8))
                 .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 2) {

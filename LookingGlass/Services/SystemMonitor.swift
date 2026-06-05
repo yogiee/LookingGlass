@@ -9,11 +9,23 @@ class SystemMonitor: ObservableObject {
     @Published var ramUsedGB: Double = 0
     @Published var ramTotalGB: Double = 0
     @Published var ollamaStatus: String = "—"
+    @Published var ollamaModel: String? = nil
+    @Published var ollamaVRAMGB: Double = 0
     @Published var lastTokensPerSec: Double = 0
+    @Published var cpuSubtitle: String = ""
+    @Published var gpuSubtitle: String = ""
 
     private var timer: Timer?
     private let client = SidecarClient()
     var ollamaHost: String? = nil
+
+    private struct OllamaPsResponse: Decodable {
+        struct Model: Decodable {
+            let name: String
+            let size_vram: Int64?
+        }
+        let models: [Model]
+    }
 
     // CPU tick bookkeeping for delta computation
     private var prevCPUInfo: processor_info_array_t?
@@ -25,6 +37,64 @@ class SystemMonitor: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refresh() }
         }
+        Task { await fetchStaticHardwareInfo() }
+    }
+
+    private func fetchStaticHardwareInfo() async {
+        // CPU — all via sysctl, fast
+        if let name = sysctlString("machdep.cpu.brand_string") {
+            let cores = sysctlInt32("hw.physicalcpu")
+            let freqHz = sysctlInt64("hw.perflevel0.maxfreq")
+            var str = "\(name) (\(cores) cores)"
+            if freqHz > 0 { str += String(format: " @ %.2f GHz", Double(freqHz) / 1e9) }
+            cpuSubtitle = str
+        }
+
+        // GPU — system_profiler reads IOKit cache, run off main thread once
+        let (gpuName, gpuCores) = await withCheckedContinuation {
+            (cont: CheckedContinuation<(String, Int), Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/sbin/system_profiler")
+                proc.arguments = ["SPDisplaysDataType", "-json"]
+                let pipe = Pipe()
+                proc.standardOutput = pipe
+                proc.standardError = Pipe()
+                guard (try? proc.run()) != nil else { cont.resume(returning: ("", 0)); return }
+                proc.waitUntilExit()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let displays = json["SPDisplaysDataType"] as? [[String: Any]],
+                   let first = displays.first {
+                    let name  = first["sppci_model"] as? String ?? ""
+                    let cores = Int(first["sppci_cores"] as? String ?? "0") ?? 0
+                    cont.resume(returning: (name, cores))
+                } else {
+                    cont.resume(returning: ("", 0))
+                }
+            }
+        }
+        var gpuStr = gpuName.isEmpty ? "GPU" : gpuName
+        if gpuCores > 0 { gpuStr += " (\(gpuCores) cores)" }
+        gpuSubtitle = gpuStr
+    }
+
+    private func sysctlString(_ name: String) -> String? {
+        var size = 0
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buf = [CChar](repeating: 0, count: size)
+        guard sysctlbyname(name, &buf, &size, nil, 0) == 0 else { return nil }
+        return String(cString: buf)
+    }
+
+    private func sysctlInt32(_ name: String) -> Int32 {
+        var v: Int32 = 0; var s = MemoryLayout<Int32>.size
+        sysctlbyname(name, &v, &s, nil, 0); return v
+    }
+
+    private func sysctlInt64(_ name: String) -> Int64 {
+        var v: Int64 = 0; var s = MemoryLayout<Int64>.size
+        sysctlbyname(name, &v, &s, nil, 0); return v
     }
 
     func stop() {
@@ -46,6 +116,26 @@ class SystemMonitor: ObservableObject {
         Task {
             let healthy = await client.health(ollamaHost: ollamaHost)
             ollamaStatus = healthy ? "Running" : "Offline"
+            if healthy {
+                await fetchOllamaPs()
+            } else {
+                ollamaModel = nil
+                ollamaVRAMGB = 0
+            }
+        }
+    }
+
+    private func fetchOllamaPs() async {
+        let host = ollamaHost ?? "http://localhost:11434"
+        guard let url = URL(string: "\(host)/api/ps") else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            let decoded = try JSONDecoder().decode(OllamaPsResponse.self, from: data)
+            ollamaModel = decoded.models.first?.name
+            ollamaVRAMGB = Double(decoded.models.first?.size_vram ?? 0) / 1_073_741_824
+        } catch {
+            ollamaModel = nil
+            ollamaVRAMGB = 0
         }
     }
 

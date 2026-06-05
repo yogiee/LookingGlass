@@ -1,10 +1,31 @@
 import SwiftUI
 
-struct PanelHeader: View {
+struct PanelHeader<Trailing: View>: View {
     let title: String
     var character: String? = nil   // asset name of the Wonderland character avatar
     var systemIcon: String? = nil  // SF Symbol name, shown as an accent-colored circle icon
     var showAppIcon = false        // app icon in a light-tinted circle (used for Settings)
+    @ViewBuilder var trailing: () -> Trailing
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(
+        title: String,
+        character: String? = nil,
+        systemIcon: String? = nil,
+        showAppIcon: Bool = false,
+        @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }
+    ) {
+        self.title = title
+        self.character = character
+        self.systemIcon = systemIcon
+        self.showAppIcon = showAppIcon
+        self.trailing = trailing
+    }
+
+    private var borderColor: Color {
+        colorScheme == .dark ? .white : .black
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -13,6 +34,7 @@ struct PanelHeader: View {
                     .scaledToFill()
                     .frame(width: 48, height: 48)
                     .clipShape(Circle())
+                    .overlay(Circle().strokeBorder(borderColor, lineWidth: 2))
             } else if showAppIcon {
                 AppIconAvatar(size: 48)
             } else if let systemIcon {
@@ -28,6 +50,7 @@ struct PanelHeader: View {
             Text(title)
                 .font(.system(size: 24, weight: .semibold))
             Spacer()
+            trailing()
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)

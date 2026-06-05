@@ -3,26 +3,44 @@ import SwiftUI
 struct RailView: View {
     let activeTab: RailTab
     let sidebarOpen: Bool
+    let systemMonitor: SystemMonitor
     let onSelect: (RailTab) -> Void
 
     private let topTabs: [RailTab] = [.chats, .tools, .models, .monitor]
+
+    private var vramFill: Double {
+        guard systemMonitor.ramTotalGB > 0 else { return 0 }
+        return systemMonitor.ollamaVRAMGB / systemMonitor.ramTotalGB
+    }
+
+    private func gaugeIcon(for fill: Double) -> String {
+        switch fill {
+        case 0.9...: return "gauge.open.with.lines.needle.84percent.exclamation"
+        case 0.6...: return "gauge.open.with.lines.needle.67percent.and.arrowtriangle"
+        case 0.3...: return "gauge.open.with.lines.needle.33percent.and.arrowtriangle"
+        default:     return "gauge.with.dots.needle.0percent"
+        }
+    }
 
     var body: some View {
         VStack(spacing: 12) {
             Spacer().frame(height: 52)  // clear traffic-light area
 
             ForEach(topTabs, id: \.self) { tab in
-                RailButton(tab: tab, isActive: isActive(tab), onTap: { onSelect(tab) })
+                let icon = tab == .monitor
+                    ? gaugeIcon(for: vramFill)
+                    : (isActive(tab) ? tab.activeIcon : tab.icon)
+                RailButton(icon: icon, isActive: isActive(tab), help: tab.label, onTap: { onSelect(tab) })
             }
 
             Spacer()
 
-            RailButton(tab: .settings, isActive: isActive(.settings), onTap: { onSelect(.settings) })
+            let settingsIcon = isActive(.settings) ? RailTab.settings.activeIcon : RailTab.settings.icon
+            RailButton(icon: settingsIcon, isActive: isActive(.settings), help: RailTab.settings.label, onTap: { onSelect(.settings) })
             Spacer().frame(height: 20)
         }
         .frame(width: 76)
         .frame(maxHeight: .infinity)
-        // Transparent — backdrop / desktop shows through behind the buttons
     }
 
     private func isActive(_ tab: RailTab) -> Bool {
@@ -31,14 +49,15 @@ struct RailView: View {
 }
 
 struct RailButton: View {
-    let tab: RailTab
+    let icon: String
     let isActive: Bool
+    let help: String
     let onTap: () -> Void
     @State private var isHovering = false
 
     var body: some View {
         Button(action: onTap) {
-            Image(systemName: tab.icon)
+            Image(systemName: icon)
                 .font(.system(size: 18, weight: isActive ? .semibold : .regular))
                 .foregroundStyle(isActive ? Color.primary : Color.secondary)
                 .frame(width: 44, height: 44)
@@ -50,7 +69,7 @@ struct RailButton: View {
         .brightness(isActive ? 0.15 : 0.0)
         .animation(.spring(duration: 0.2, bounce: 0.3), value: isActive)
         .animation(.easeInOut(duration: 0.12), value: isHovering)
-        .help(tab.label)
+        .help(help)
         .onHover { isHovering = $0 }
     }
 }

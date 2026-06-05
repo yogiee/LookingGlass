@@ -168,19 +168,20 @@ final class ConversationStore: ObservableObject {
     /// Create a project: scaffold its folder, insert the row, then enter it with a
     /// fresh chat ready to go.
     @discardableResult
-    func createProject(name: String, description: String, folderURL: URL, guidelines: String) -> UUID {
+    func createProject(name: String, description: String, folderURL: URL, guidelines: String,
+                       color: ProjectColor = .defaultBlue) -> UUID {
         let id = UUID()
         let now = Self.epoch()
         ProjectScaffold.scaffold(projectID: id, name: name, description: description, folder: folderURL, guidelines: guidelines)
         do {
             try dbQueue.write { db in
                 try db.execute(sql: """
-                    INSERT INTO projects (id, name, description, folder_path, created_at, archived)
-                    VALUES (?, ?, ?, ?, ?, 0)
+                    INSERT INTO projects (id, name, description, folder_path, created_at, archived, color)
+                    VALUES (?, ?, ?, ?, ?, 0, ?)
                     """, arguments: [
                         id.uuidString, name,
                         description.isEmpty ? nil : description,
-                        folderURL.path, now,
+                        folderURL.path, now, color.rawValue,
                     ])
             }
         } catch {
@@ -189,6 +190,29 @@ final class ConversationStore: ObservableObject {
         activeConversationID = nil     // fresh chat in the new project
         activeProjectID = id           // enter it (didSet → reload)
         return id
+    }
+
+    /// Update a project's editable metadata (name, description, color). Folder and
+    /// guidelines live on disk and are edited directly in the project folder.
+    func updateProject(id: UUID, name: String, description: String, color: ProjectColor) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            try dbQueue.write { db in
+                try db.execute(sql: """
+                    UPDATE projects SET name = ?, description = ?, color = ? WHERE id = ?
+                    """, arguments: [
+                        trimmed,
+                        description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? nil
+                            : description.trimmingCharacters(in: .whitespacesAndNewlines),
+                        color.rawValue, id.uuidString,
+                    ])
+            }
+        } catch {
+            print("[store] updateProject failed: \(error)")
+        }
+        reload()
     }
 
     /// Delete a project. Its chats survive (FK `ON DELETE SET NULL` → they become
@@ -289,7 +313,8 @@ final class ConversationStore: ObservableObject {
     private func fetchAllProjects() -> [ProjectListItem] {
         let rows = (try? dbQueue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT p.id AS id, p.name AS name, p.folder_path AS folder_path,
+                SELECT p.id AS id, p.name AS name, p.description AS description,
+                       p.folder_path AS folder_path, p.color AS color,
                        (SELECT COUNT(*) FROM conversations c WHERE c.project_id = p.id) AS chat_count
                 FROM projects p
                 WHERE p.archived = 0
@@ -299,9 +324,12 @@ final class ConversationStore: ObservableObject {
         return rows.compactMap { row -> ProjectListItem? in
             guard let idString: String = row["id"], let id = UUID(uuidString: idString),
                   let name: String = row["name"] else { return nil }
+            let desc: String = row["description"] ?? ""
             let folder: String = row["folder_path"] ?? ""
             let count: Int = row["chat_count"] ?? 0
-            return ProjectListItem(id: id, name: name, folderPath: folder, chatCount: count)
+            let colorRaw: String? = row["color"]
+            let color = colorRaw.flatMap { ProjectColor(rawValue: $0) } ?? .defaultBlue
+            return ProjectListItem(id: id, name: name, description: desc, folderPath: folder, chatCount: count, color: color)
         }
     }
 
@@ -455,6 +483,9 @@ final class ConversationStore: ObservableObject {
                     INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
                 END;
                 """)
+        }
+        migrator.registerMigration("v2_project_color") { db in
+            try db.execute(sql: "ALTER TABLE projects ADD COLUMN color TEXT")
         }
         return migrator
     }

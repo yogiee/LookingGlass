@@ -61,7 +61,11 @@ struct RootView: View {
     @AppStorage("fontSize")         private var fontSize         = 14.0
     @AppStorage("lineHeight")       private var lineHeight       = 1.2
     @AppStorage("backgroundStyle")  private var backgroundStyleRaw = BackgroundStyle.glass.rawValue
+    @AppStorage("ollamaHost")       private var ollamaHost       = "http://localhost:11434"
     @State private var sidebarVisible = true
+
+    @StateObject private var systemMonitor = SystemMonitor()
+    @StateObject private var toolCallStore = ToolCallStore()
 
     private var backgroundStyle: BackgroundStyle {
         BackgroundStyle(rawValue: backgroundStyleRaw) ?? .glass
@@ -105,7 +109,7 @@ struct RootView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            RailView(activeTab: railTab, sidebarOpen: sidebarVisible) { tapped in
+            RailView(activeTab: railTab, sidebarOpen: sidebarVisible, systemMonitor: systemMonitor) { tapped in
                 if tapped == railTab {
                     withAnimation(.spring(duration: 0.22)) { sidebarVisible.toggle() }
                 } else {
@@ -118,19 +122,22 @@ struct RootView: View {
 
             if sidebarVisible {
                 SidebarView(tab: railTab)
+                    .environmentObject(systemMonitor)
+                    .environmentObject(toolCallStore)
                     .frame(width: 380)
-                    .padding(.vertical, 8)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     // Hairline border so the panel reads against the frosted backdrop
                     .overlay(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
                             .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
-                            .padding(.vertical, 8)
                     )
+                    .padding(.top, 50)
+                    .padding(.bottom, 30)
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
             ChatView()
+                .environmentObject(toolCallStore)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .ignoresSafeArea()  // let padding(.vertical,8) measure from actual window edges
@@ -142,7 +149,11 @@ struct RootView: View {
         .preferredColorScheme(preferredColorScheme)
         .environment(\.chatFontSize, fontSize)
         .environment(\.chatLineHeight, lineHeight)
-        .task { sidecar.start() }
+        .task {
+            sidecar.start()
+            systemMonitor.ollamaHost = ollamaHost
+            systemMonitor.start()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
             railSelectionRaw = RailTab.settings.rawValue
             if !sidebarVisible {

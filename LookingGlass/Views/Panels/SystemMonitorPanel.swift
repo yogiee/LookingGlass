@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SystemMonitorPanel: View {
-    @StateObject private var monitor = SystemMonitor()
+    @EnvironmentObject private var monitor: SystemMonitor
     @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
 
     var body: some View {
@@ -13,83 +13,143 @@ struct SystemMonitorPanel: View {
                     MonitorCard(
                         icon: "cpu",
                         label: "CPU",
+                        subtitle: monitor.cpuSubtitle.isEmpty ? nil : monitor.cpuSubtitle,
                         value: String(format: "%.0f%%", monitor.cpuPercent),
                         fill: monitor.cpuPercent / 100.0
                     )
-                    if let gpu = monitor.gpuPercent {
-                        MonitorCard(
-                            icon: "memorychip",
-                            label: "GPU",
-                            value: String(format: "%.0f%%", gpu),
-                            fill: gpu / 100.0
-                        )
-                    } else {
-                        MonitorCard(
-                            icon: "memorychip",
-                            label: "GPU",
-                            value: "N/A",
-                            fill: 0
-                        )
-                    }
                     MonitorCard(
-                        icon: "memorychip.fill",
+                        icon: "circle.hexagongrid.circle",
+                        label: "GPU",
+                        subtitle: monitor.gpuSubtitle.isEmpty ? nil : monitor.gpuSubtitle,
+                        value: monitor.gpuPercent.map { String(format: "%.0f%%", $0) } ?? "N/A",
+                        fill: (monitor.gpuPercent ?? 0) / 100.0
+                    )
+                    MonitorCard(
+                        icon: "memorychip",
                         label: "Memory",
+                        subtitle: nil,
                         value: String(format: "%.1f / %.0f GB", monitor.ramUsedGB, monitor.ramTotalGB),
                         fill: monitor.ramTotalGB > 0 ? monitor.ramUsedGB / monitor.ramTotalGB : 0
                     )
-                    MonitorCard(
-                        icon: "bolt.circle",
-                        label: "Ollama",
-                        value: monitor.ollamaStatus,
-                        fill: monitor.ollamaStatus == "Running" ? 1.0 : 0,
-                        isStatus: true
-                    )
+                    ollamaCard
                 }
                 .padding(12)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { monitor.ollamaHost = ollamaHost; monitor.start() }
-        .onDisappear { monitor.stop() }
+        .onAppear { monitor.ollamaHost = ollamaHost }
+    }
+
+    private var ollamaCard: some View {
+        let vramFill = monitor.ramTotalGB > 0 ? monitor.ollamaVRAMGB / monitor.ramTotalGB : 0
+        let valueText: String = {
+            if monitor.ollamaStatus == "Offline" { return "Offline" }
+            if monitor.ollamaVRAMGB > 0 { return String(format: "%.1f GB VRAM", monitor.ollamaVRAMGB) }
+            return monitor.ollamaStatus
+        }()
+        return MonitorCard(
+            icon: "ollama-logo",
+            isCustomIcon: true,
+            label: "Ollama",
+            subtitle: monitor.ollamaModel,
+            value: valueText,
+            fill: vramFill
+        )
     }
 }
 
-struct MonitorCard: View {
-    let icon: String
-    let label: String
-    let value: String
-    let fill: Double
-    var isStatus: Bool = false
+// MARK: - Dot Matrix Bar
+
+struct DotMatrixBar: View {
+    var fill: Double        // 0...1
+    var color: Color = .accentColor
+
+    private let rows    = 5
+    private let dotSize: CGFloat = 3
+    private let gap:     CGFloat = 1
 
     @Environment(\.colorScheme) private var colorScheme
 
+    private var emptyColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.07)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: icon)
-                    .foregroundStyle(barColor)
-                    .font(.system(size: 13))
-                Text(label)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(value)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.primary)
+        Canvas { ctx, size in
+            let unit   = dotSize + gap
+            let cols   = Int((size.width + gap) / unit)
+            let dotH   = (size.height - gap * CGFloat(rows - 1)) / CGFloat(rows)
+            let filled = max(0, min(cols, Int((fill * Double(cols)).rounded())))
+
+            for row in 0..<rows {
+                for col in 0..<cols {
+                    let x = CGFloat(col) * unit
+                    let y = CGFloat(row) * (dotH + gap)
+                    ctx.fill(
+                        Path(ellipseIn: CGRect(x: x, y: y, width: dotSize, height: dotH)),
+                        with: .color(col < filled ? color : emptyColor)
+                    )
+                }
             }
-            if !isStatus {
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(Color.primary.opacity(colorScheme == .dark ? 0.15 : 0.1))
-                            .frame(height: 4)
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(barColor)
-                            .frame(width: geo.size.width * max(0, min(fill, 1)), height: 4)
+        }
+        .frame(height: dotSize * CGFloat(rows) + gap * CGFloat(rows - 1))
+    }
+}
+
+// MARK: - Monitor Card
+
+struct MonitorCard: View {
+    let icon: String
+    var isCustomIcon: Bool = false
+    let label: String
+    var subtitle: String?
+    let value: String
+    let fill: Double
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var iconColor: Color {
+        colorScheme == .dark ? .white : .black
+    }
+
+    @ViewBuilder
+    private var iconView: some View {
+        if isCustomIcon {
+            Asset.image(icon)
+                .scaledToFit()
+                .frame(width: 32, height: 32)
+                .colorMultiply(iconColor)
+                .frame(width: 42, alignment: .center)
+        } else {
+            Image(systemName: icon)
+                .font(.system(size: 36, weight: .medium))
+                .foregroundStyle(iconColor)
+                .frame(width: 42, alignment: .center)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                iconView
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.system(size: 15, weight: .semibold))
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                 }
-                .frame(height: 4)
+                Spacer()
+                Text(value)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
             }
+            DotMatrixBar(fill: fill, color: barColor)
         }
         .padding(12)
         .background(cardBackground)

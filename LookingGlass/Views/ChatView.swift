@@ -10,6 +10,8 @@ class ChatViewModel: ObservableObject {
     /// store's `activeConversationID`; `nil` = an unsaved fresh chat.
     private(set) var loadedConversationID: UUID?
 
+    var toolCallStore: ToolCallStore?
+
     private let client = SidecarClient()
     private var streamTask: Task<Void, Never>?
 
@@ -103,6 +105,7 @@ class ChatViewModel: ObservableObject {
             messages[idx].content += chunk
         case .toolCallStart(let id, let tool, let argsJSON):
             messages[idx].toolCalls.append(ToolCall(id: id, tool: tool, argsJSON: argsJSON))
+            toolCallStore?.recordStart(id: id, tool: tool, argsJSON: argsJSON, conversationId: loadedConversationID)
         case .toolCallResult(let id, let success, let result, let latencyMs):
             if let tcIdx = messages[idx].toolCalls.firstIndex(where: { $0.id == id }) {
                 messages[idx].toolCalls[tcIdx].result = result
@@ -110,6 +113,7 @@ class ChatViewModel: ObservableObject {
                 messages[idx].toolCalls[tcIdx].latencyMs = latencyMs
                 messages[idx].toolCalls[tcIdx].isComplete = true
             }
+            toolCallStore?.recordResult(id: id, success: success, result: result)
         case .messageEnd:
             break
         case .error(let msg):
@@ -124,6 +128,7 @@ class ChatViewModel: ObservableObject {
 
 struct ChatView: View {
     @EnvironmentObject private var store: ConversationStore
+    @EnvironmentObject private var toolCallStore: ToolCallStore
     @StateObject private var viewModel = ChatViewModel()
     @StateObject private var inputController = ChatInputController()
 
@@ -153,7 +158,7 @@ struct ChatView: View {
     private var inputMinHeight: CGFloat { fontSize + 8 }
     private var inputMaxHeight: CGFloat { (fontSize + 8) * 7 }
     // Reserve scroll space for the whole input region (text field + bottom bar + padding)
-    private var inputReserve: CGFloat { inputHeight + 80 }
+    private var inputReserve: CGFloat { inputHeight + 84 }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -175,6 +180,7 @@ struct ChatView: View {
                 viewModel.load(newID, store: store)
             }
         }
+        .task { viewModel.toolCallStore = toolCallStore }
     }
 
     private var aliceEmptyState: some View {
@@ -243,10 +249,11 @@ struct ChatView: View {
                     }
                     .frame(maxWidth: 960)
                     .padding(.horizontal, 24)
-                    .padding(.top, 16)
+                    .padding(.top, 96)
                     Spacer(minLength: 50)
                 }
             }
+            .defaultScrollAnchor(.bottom)
             .mask(
                 VStack(spacing: 0) {
                     LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
@@ -282,7 +289,7 @@ struct ChatView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
-        .padding(.bottom, 16)
+        .padding(.bottom, 30)
         .animation(.easeInOut(duration: 0.16), value: inputFocused)
     }
 

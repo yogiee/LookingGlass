@@ -7,13 +7,14 @@ import AppKit
 struct NewProjectSheet: View {
     @Environment(\.dismiss) private var dismiss
 
-    /// (name, description, folder, guidelines)
-    let onCreate: (String, String, URL, String) -> Void
+    /// (name, description, folder, guidelines, color)
+    let onCreate: (String, String, URL, String, ProjectColor) -> Void
 
     @State private var name = ""
     @State private var description = ""
     @State private var folderURL: URL?
     @State private var guidelines = ""
+    @State private var selectedColor: ProjectColor = .defaultBlue
 
     private var canCreate: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && folderURL != nil
@@ -49,6 +50,10 @@ struct NewProjectSheet: View {
                     .foregroundStyle(.tertiary)
             }
 
+            field("Color") {
+                ColorSwatchPicker(selected: $selectedColor)
+            }
+
             field("Guidelines") {
                 TextEditor(text: $guidelines)
                     .font(.system(size: 12, design: .monospaced))
@@ -73,7 +78,8 @@ struct NewProjectSheet: View {
                         name.trimmingCharacters(in: .whitespacesAndNewlines),
                         description.trimmingCharacters(in: .whitespacesAndNewlines),
                         folderURL,
-                        guidelines
+                        guidelines,
+                        selectedColor
                     )
                     dismiss()
                 }
@@ -106,5 +112,39 @@ struct NewProjectSheet: View {
         if panel.runModal() == .OK, let url = panel.url {
             folderURL = url
         }
+    }
+}
+
+// MARK: - Shared color swatch picker
+
+struct ColorSwatchPicker: View {
+    @Binding var selected: ProjectColor
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(ProjectColor.allCases, id: \.rawValue) { color in
+                colorSwatch(color)
+            }
+        }
+    }
+
+    private func colorSwatch(_ color: ProjectColor) -> some View {
+        let isSelected = selected == color
+        return Circle()
+            .fill(color.color)
+            .frame(width: 24, height: 24)
+            .overlay(
+                Circle()
+                    .strokeBorder(Color.primary.opacity(isSelected ? 0.5 : 0), lineWidth: 2)
+                    .padding(-3)
+            )
+            .overlay(
+                Image(systemName: "checkmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .opacity(isSelected ? 1 : 0)
+            )
+            .onTapGesture { selected = color }
+            .animation(.easeInOut(duration: 0.12), value: isSelected)
     }
 }
