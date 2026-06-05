@@ -6,6 +6,24 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.7.2</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.7.2 — Performance fix</h3>
+        <ul>
+          <li>Fixed app freezing when resizing the window or scrolling through messages with heavy markdown — chat bubbles now skip re-rendering on layout passes when their content hasn't changed</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 05 Jun 2026 22:00:00 +0530</pubDate>
+      <sparkle:version>10</sparkle:version>
+      <sparkle:shortVersionString>0.7.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.7.2/LookingGlass.dmg"
+        sparkle:edSignature="wERydhmZOzwehMI+16H/KEjrY7KiqG7G9xfS0vUjZWsvLRbbCcBRuGZ9+yXeGoiFwnjHDsvFCvYqhJ40wwGmCQ=="
+        length="50579276"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.7.1</title>
       <description><![CDATA[
         <h3>Looking Glass 0.7.1 — Bugfix</h3>
