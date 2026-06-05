@@ -6,6 +6,29 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.7.0</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.7.0 — Tool Calls, System Monitor polish, Project colors</h3>
+        <ul>
+          <li>Tool Calls panel: global activity log with Current/All filter, search, and expandable result cards — see every tool Alice runs in real time</li>
+          <li>System Monitor polish: Ollama logo tints correctly in dark/light mode; all monitor icons are now white (dark) / black (light) for clarity</li>
+          <li>Project colors: choose from 8 colors when creating a project — folder icons and the project back-button tint to match</li>
+          <li>Edit Project: name, description, and color are now editable (pencil button in the project header or right-click context menu on any project row)</li>
+          <li>Sidebar polish: avatar 2px white/black scheme-aware borders; floating sidebar with clean rounded corners (no bleed); search fields with focus animation</li>
+        </ul>
+        <p>Requires macOS 26, Ollama, and Homebrew Python on the host.</p>
+      ]]></description>
+      <pubDate>Thu, 05 Jun 2026 18:00:00 +0530</pubDate>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.7.0/LookingGlass.dmg"
+        sparkle:edSignature="4pTZufHSuwJGzS21YkYlGWSyNWI72QdVd/AQkFU/9DMHZqZP/MyUuj0dK4Jo3VPhAwNAWXFUCu1intdq58PJBQ=="
+        length="50578265"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.6.5</title>
       <description><![CDATA[
         <h3>Looking Glass 0.6.5 — Liquid Glass UI</h3>
