@@ -6,6 +6,26 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.2</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.2 — Apple Intelligence utilities + faster default model</h3>
+        <ul>
+          <li>Apple Intelligence utilities: auto-titles new conversations after the first exchange, generates a one-sentence description when you save a message to a project's memory bank, and expands sidebar search queries with synonyms for better recall — all on-device and private</li>
+          <li>Toggle in Settings → System to enable/disable Apple Intelligence features</li>
+          <li>Default chat model updated to qwen3.5:4b-mlx — stronger personality, 64 tok/s on Apple Silicon, half the RAM of the previous default. 9b-mlx still available via Settings → Model</li>
+        </ul>
+      ]]></description>
+      <pubDate>Sun, 07 Jun 2026 02:59:54 +0530</pubDate>
+      <sparkle:version>13</sparkle:version>
+      <sparkle:shortVersionString>0.8.2</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.2/LookingGlass.dmg"
+        sparkle:edSignature="906ZqNptiRVAAPnhQ8hi5D12Th7N7WaXWBIyfKCXTyxZDojujZvydnGt07JO0wPfR6xtEwyNWHtXePHB1+GSCw=="
+        length="50789533"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.0</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.0 — Deep Research</h3>
