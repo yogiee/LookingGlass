@@ -6,6 +6,8 @@ struct ChatHistoryPanel: View {
     @State private var projectToEdit: ProjectListItem? = nil
     @State private var hoveringFolderBack = false
     @FocusState private var searchFocused: Bool
+    @State private var searchInput = ""
+    @State private var expandTask: Task<Void, Never>?
     @Environment(\.colorScheme) private var colorScheme
     private var borderColor: Color { colorScheme == .dark ? .white : .black }
 
@@ -142,12 +144,31 @@ struct ChatHistoryPanel: View {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 15))
                 .foregroundStyle(.secondary)
-            TextField(inProjectView ? "Search this project" : "Search", text: $store.searchText)
+            TextField(inProjectView ? "Search this project" : "Search", text: $searchInput)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
                 .focused($searchFocused)
-            if !store.searchText.isEmpty {
-                Button { store.searchText = "" } label: {
+                .onChange(of: searchInput) { _, new in
+                    expandTask?.cancel()
+                    if new.isEmpty {
+                        store.searchText = ""
+                        return
+                    }
+                    expandTask = Task {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        guard !Task.isCancelled else { return }
+                        if let expanded = await AppleIntelligenceService.shared.expandSearchQuery(new) {
+                            store.searchText = expanded
+                        } else {
+                            store.searchText = new
+                        }
+                    }
+                }
+            if !searchInput.isEmpty {
+                Button {
+                    searchInput = ""
+                    store.searchText = ""
+                } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 14))
                         .foregroundStyle(.tertiary)
@@ -276,7 +297,7 @@ struct ChatHistoryPanel: View {
 
     private var emptyState: some View {
         VStack(spacing: 6) {
-            Image(systemName: store.searchText.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass")
+            Image(systemName: searchInput.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass")
                 .font(.system(size: 24))
                 .foregroundStyle(.tertiary)
             Text(emptyMessage)
@@ -290,7 +311,7 @@ struct ChatHistoryPanel: View {
     }
 
     private var emptyMessage: String {
-        if !store.searchText.isEmpty { return "No matches" }
+        if !searchInput.isEmpty { return "No matches" }
         return inProjectView ? "No chats in this project yet" : "No conversations yet"
     }
 

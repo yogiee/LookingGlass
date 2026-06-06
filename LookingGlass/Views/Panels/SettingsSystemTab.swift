@@ -4,6 +4,7 @@ struct SettingsSystemTab: View {
     @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
     @AppStorage("systemPrompt") private var systemPrompt = ""
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
+    @AppStorage("appleIntelligenceEnabled") private var appleIntelligenceEnabled = true
 
     @State private var tools: [ToolInfo] = []
     @State private var loadingTools = true
@@ -15,6 +16,7 @@ struct SettingsSystemTab: View {
         Form {
             personalitySection
             connectionSection
+            appleIntelligenceSection
             toolsSection
         }
         .formStyle(.grouped)
@@ -74,6 +76,30 @@ struct SettingsSystemTab: View {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // MARK: Apple Intelligence
+
+    private var appleIntelligenceSection: some View {
+        let supported = AppleIntelligenceService.shared.isSupported
+        return Section("Apple Intelligence") {
+            Toggle(isOn: $appleIntelligenceEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use for utilities")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("Auto-titles new chats, summarizes memory entries, expands search queries. On-device and private.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(!supported)
+
+            if !supported {
+                Text("Not available — enable Apple Intelligence in System Settings, or check that your device is supported.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
             }
         }
     }

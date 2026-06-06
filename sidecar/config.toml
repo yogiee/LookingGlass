@@ -1,7 +1,9 @@
 [model]
-# Chat default. Benchmark 2026-06-03: MLX wins as model size grows; at 16K context
-# qwen3.5:9b-mlx matches the GGUF on quality/voice and is a touch faster.
-default = "qwen3.5:9b-mlx"
+# Chat default. Aptitude Battery B (2026-06-07): 4b-mlx promoted over 9b-mlx.
+# Higher personality ceiling (wit markers, sharper character in multi-turn B3),
+# passes cylinder (9b fails), 64 tok/s vs 41.6 tok/s, 3.5GB vs 8.1GB RAM.
+# 9b-mlx still available via Settings → Model when extra depth/length is needed.
+default = "qwen3.5:4b-mlx"
 ollama_host = "http://localhost:11434"
 think = false
 # Context window sent to Ollama (in `options`). The models' OWN default is 262144
@@ -27,7 +29,7 @@ keep_alive = "5m"
 # search, source reading, synthesis), not raw model size. 9b-mlx at 10x speed produces
 # 80% of the depth. Select 27b manually via Settings → Model when max depth is worth it.
 [models]
-default  = "qwen3.5:9b-mlx"
+default  = "qwen3.5:4b-mlx"
 coding   = "gemma4:latest"
 research = "gemma4:latest"
 
