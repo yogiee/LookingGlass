@@ -113,8 +113,6 @@ struct ResearchReportPanel: View {
     // MARK: Theme
 
     private var reportTheme: Theme {
-        // em spacing = lineHeight multiplier − 1 (e.g. 1.5 → 0.5em between lines)
-        let lineSpacing = CGFloat(lineHeight) - 1.0
         return Theme.gitHub
             .text {
                 ForegroundColor(.primary)

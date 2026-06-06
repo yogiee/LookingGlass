@@ -302,7 +302,8 @@ struct MessageActions: View {
         savingToMemory = true
         let title = Self.memoryTitle(from: content)
         Task {
-            let success = await client.saveMemory(content: content, title: title, projectDir: projectDir)
+            let description = await AppleIntelligenceService.shared.generateMemorySummary(content)
+            let success = await client.saveMemory(content: content, title: title, description: description, projectDir: projectDir)
             await MainActor.run {
                 savingToMemory = false
                 guard success else { return }

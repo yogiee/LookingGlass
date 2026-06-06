@@ -67,13 +67,16 @@ class ChatViewModel: ObservableObject {
         // Setting loadedConversationID *before* activeConversationID means the
         // view's onChange guard treats this as "already loaded" and won't reload.
         let conversationID: UUID
+        let isFirstTurn: Bool
         if let active = loadedConversationID {
             conversationID = active
+            isFirstTurn = false
         } else {
             let newID = store.createConversation(title: Self.deriveTitle(text))
             loadedConversationID = newID
             store.activeConversationID = newID
             conversationID = newID
+            isFirstTurn = true
         }
         store.appendMessage(userMessage, to: conversationID)
 
@@ -110,6 +113,16 @@ class ChatViewModel: ObservableObject {
                 ) {
                     guard !Task.isCancelled else { break }
                     apply(event)
+                }
+                // After the first assistant reply, replace the derived title with an
+                // FM-generated one — more descriptive than the raw first line of user input.
+                if isFirstTurn, !Task.isCancelled,
+                   let assistantContent = messages.last.map({ $0.role == .assistant ? $0.content : "" }),
+                   !assistantContent.isEmpty {
+                    if let fmTitle = await AppleIntelligenceService.shared.generateConversationTitle(
+                        userMessage: text, assistantReply: assistantContent) {
+                        store.rename(conversationID, to: fmTitle)
+                    }
                 }
             } catch {
                 if let idx = messages.indices.last, messages[idx].content.isEmpty,
