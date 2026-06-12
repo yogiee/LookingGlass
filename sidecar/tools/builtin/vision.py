@@ -1,8 +1,15 @@
-"""describe_image — vision tool backed by gemma4:latest.
+"""describe_image — vision tool backed by qwen2.5vl:3b.
 
 Makes a separate, non-streaming Ollama call using the request's Ollama host
-(via contextvar). Alice's main model stays loaded; gemma4 is loaded only for
-the duration of the tool call, avoiding a double model-swap.
+(via contextvar). Alice's main model stays loaded; the vision model is loaded
+only for the duration of the tool call, avoiding a double model-swap.
+
+Model: qwen2.5vl:3b — BenchLLAMA Vision battery 2026-06-13 composite 1.00
+(perfect OCR/count/chart/spatial/describe) at 129 tok/s / 3.2GB, beating the
+prior gemma4:latest (0.767). Non-reasoning VLM, so think:False is a harmless
+no-op (cf. qwen3-vl, whose unkillable thinking made it unusable here).
+num_ctx matches the benched 16384 to avoid truncating image tokens on dense
+images / OCR; the model is tiny so the RAM cost is negligible.
 """
 import base64
 from pathlib import Path
@@ -12,7 +19,11 @@ import httpx
 from ..base import Tool, err, ok
 from ..context import ollama_host as get_ollama_host
 
-_VISION_MODEL = "gemma4:latest"
+_VISION_MODEL = "qwen2.5vl:3b"
+_SYSTEM_PROMPT = (
+    "You are a precise visual analysis assistant. "
+    "Look carefully at the image and answer."
+)
 _DEFAULT_PROMPT = "Describe this image in detail."
 
 
@@ -35,10 +46,13 @@ async def _describe_image(args: dict) -> dict:
     host = get_ollama_host()
     payload = {
         "model": _VISION_MODEL,
-        "messages": [{"role": "user", "content": prompt, "images": [img_b64]}],
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt, "images": [img_b64]},
+        ],
         "stream": False,
         "think": False,
-        "options": {"num_ctx": 4096},
+        "options": {"num_ctx": 16384},
     }
 
     try:
