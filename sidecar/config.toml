@@ -1,8 +1,6 @@
 [model]
-# Chat default. Aptitude Battery B (2026-06-07): 4b-mlx promoted over 9b-mlx.
-# Higher personality ceiling (wit markers, sharper character in multi-turn B3),
-# passes cylinder (9b fails), 64 tok/s vs 41.6 tok/s, 3.5GB vs 8.1GB RAM.
-# 9b-mlx still available via Settings → Model when extra depth/length is needed.
+# Chat default. BenchLLAMA 2026-06-10: 4b-mlx confirmed speed-tier winner.
+# 67 tok/s, 4GB, passes cylinder. 9b-mlx is the quality-tier option (Settings → Model).
 default = "qwen3.5:4b-mlx"
 ollama_host = "http://localhost:11434"
 think = false
@@ -23,15 +21,23 @@ keep_alive = "5m"
 # Mode-aware routing table (Step 5). Mirrors the [models] section in project.toml.
 # Used for independent (non-project) chats; projects can override per-mode in their
 # own project.toml.
-# Research model: benchmarked 27b-mlx at 16 tok/s but live deep-research runs (multi-
-# tool, long context) on M1 Max 32GB hit 5-10s/word due to RAM pressure — impractical.
-# The deep-research SKILL.md playbook provides the quality via process (structured multi-
-# search, source reading, synthesis), not raw model size. 9b-mlx at 10x speed produces
-# 80% of the depth. Select 27b manually via Settings → Model when max depth is worth it.
+#
+# Rankings source: BenchLLAMA aptitude run 2026-06-10. Full table: WORKSPACE/model-rankings.md.
+#
+# default  — qwen3.5:4b-mlx: speed-tier Alice. 67 tok/s, 4GB, passes cylinder.
+# research — qwen3.5:9b-mlx: research-aware Alice. 41 tok/s, 9GB, 6/7 JPEG, better depth.
+#            For max depth: select qwen3.5:27b-mlx manually via Settings → Model.
+#            27b-mlx is the benchmark winner but hits 5-10s/word under RAM pressure —
+#            reserved for deliberate deep-research sessions, not auto-routed.
+# coding   — gemma4:12b: tool quality worker. 4/4 D7+D8, think_ok. Upgrade from gemma4:latest.
+#            gemma4:latest remains the fallback if 12b is not installed.
+#
+# Router model (llama3.2:3b, 10/10 classify, 177 tok/s) — not yet wired into sidecar.
+# Currently routing is keyword-based (router.py). Neural router is a future improvement.
 [models]
 default  = "qwen3.5:4b-mlx"
-coding   = "gemma4:latest"
-research = "gemma4:latest"
+coding   = "gemma4:12b"
+research = "qwen3.5:9b-mlx"
 
 [server]
 port = 8765
