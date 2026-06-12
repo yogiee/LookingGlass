@@ -340,6 +340,17 @@ async def chat_stream(
                     # The SSE stream already sent the full result to the client; the
                     # model only needs enough to reason from, not to re-read the source.
                     raw_result = result.get("result", "")
+                    # Mark failures explicitly. The success flag is true on the SSE event
+                    # (Swift sees it) but is otherwise lost here — the model would receive
+                    # the error string as ordinary tool output and, per BenchLLAMA D4b,
+                    # fabricate a plausible value instead of reporting the failure. The
+                    # marker gives it an unambiguous signal not to.
+                    if not result.get("success", False):
+                        raw_result = (
+                            "[TOOL ERROR — this call FAILED. Do not fabricate, guess, or "
+                            "infer its output. Tell the user the tool failed and stop or "
+                            f"retry.] {raw_result}"
+                        )
                     history_result = (
                         raw_result[:6_000] + "\n…[truncated for context window]"
                         if len(raw_result) > 6_000 else raw_result
