@@ -52,16 +52,6 @@ class ChatViewModel: ObservableObject {
         inputText = ""
         let userMessage = Message(role: .user, content: text)
         messages.append(userMessage)
-        messages.append(Message(role: .assistant, content: "", isStreaming: true))
-        isStreaming = true
-
-        // Research state — reset per-send so each run starts clean
-        isResearching = researchMode
-        researchStatus = researchMode ? "Starting research..." : nil
-        researchReportPath = nil
-        researchSearchCount = 0
-        researchReadCount = 0
-        self.researchMode = false  // reset toggle; user re-enables for next run
 
         // Ensure a persisted conversation exists, then save the user's turn.
         // Setting loadedConversationID *before* activeConversationID means the
@@ -80,7 +70,50 @@ class ChatViewModel: ObservableObject {
         }
         store.appendMessage(userMessage, to: conversationID)
 
-        let history = Array(messages.dropLast())
+        runTurn(history: Array(messages), model: model, ollamaHost: ollamaHost,
+                enabledTools: enabledTools, systemPrompt: systemPrompt, userName: userName,
+                mcpHintsEnabled: mcpHintsEnabled, researchMode: researchMode, specialistMode: false,
+                conversationID: conversationID, isFirstTurn: isFirstTurn, titleSeed: text, store: store)
+    }
+
+    /// "Consult the big model": re-run the last user turn on the specialist (cloud)
+    /// model and append a new, cloud-tagged assistant turn. The local answer is kept
+    /// above it — a labeled local↔cloud pair on the same prompt. Consent = the tap;
+    /// nothing leaves the machine until the user invokes this.
+    func escalate(ollamaHost: String, enabledTools: [String]?, systemPrompt: String?,
+                  userName: String?, mcpHintsEnabled: [String: Bool]? = nil,
+                  store: ConversationStore) {
+        guard !isStreaming else { return }
+        guard let conversationID = loadedConversationID else { return }
+        guard let lastUserIdx = messages.lastIndex(where: { $0.role == .user }) else { return }
+        // History through the last USER message — exclude the local answer so the
+        // specialist responds to the question fresh, not to Alice's take.
+        let history = Array(messages.prefix(through: lastUserIdx))
+        let seed = messages[lastUserIdx].content
+        runTurn(history: history, model: nil, ollamaHost: ollamaHost,
+                enabledTools: enabledTools, systemPrompt: systemPrompt, userName: userName,
+                mcpHintsEnabled: mcpHintsEnabled, researchMode: false, specialistMode: true,
+                conversationID: conversationID, isFirstTurn: false, titleSeed: seed, store: store)
+    }
+
+    /// Append a streaming assistant placeholder, stream the turn from the sidecar, and
+    /// persist it. Shared by `send` (fresh user turn) and `escalate` (specialist re-run).
+    private func runTurn(history: [Message], model: String?, ollamaHost: String,
+                         enabledTools: [String]?, systemPrompt: String?, userName: String?,
+                         mcpHintsEnabled: [String: Bool]?, researchMode: Bool, specialistMode: Bool,
+                         conversationID: UUID, isFirstTurn: Bool, titleSeed: String,
+                         store: ConversationStore) {
+        messages.append(Message(role: .assistant, content: "", isStreaming: true))
+        isStreaming = true
+
+        // Research state — reset per-run so each run starts clean
+        isResearching = researchMode
+        researchStatus = researchMode ? "Starting research..." : nil
+        researchReportPath = nil
+        researchSearchCount = 0
+        researchReadCount = 0
+        self.researchMode = false  // reset toggle; user re-enables for next run
+
         // Where this conversation lives — sent so the sidecar scopes tools and
         // reads project.toml/guidelines.md. nil for independent chats.
         let projectDir = store.projectFolderPath(forConversation: conversationID)
@@ -109,7 +142,8 @@ class ChatViewModel: ObservableObject {
                     projectDir: projectDir,
                     userName: userName,
                     mcpHintsEnabled: mcpHintsEnabled,
-                    researchMode: researchMode
+                    researchMode: researchMode,
+                    specialistMode: specialistMode
                 ) {
                     guard !Task.isCancelled else { break }
                     apply(event)
@@ -120,7 +154,7 @@ class ChatViewModel: ObservableObject {
                    let assistantContent = messages.last.map({ $0.role == .assistant ? $0.content : "" }),
                    !assistantContent.isEmpty {
                     if let fmTitle = await AppleIntelligenceService.shared.generateConversationTitle(
-                        userMessage: text, assistantReply: assistantContent) {
+                        userMessage: titleSeed, assistantReply: assistantContent) {
                         store.rename(conversationID, to: fmTitle)
                     }
                 }
@@ -300,6 +334,18 @@ struct ChatView: View {
         )
     }
 
+    /// "Consult the big model" on the latest answer — escalate to the cloud specialist.
+    private func consult() {
+        viewModel.escalate(
+            ollamaHost: ollamaHost,
+            enabledTools: decodedEnabledTools(),
+            systemPrompt: systemPrompt.isEmpty ? nil : systemPrompt,
+            userName: userName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : userName,
+            mcpHintsEnabled: decodedMcpHintsEnabled(),
+            store: store
+        )
+    }
+
     private func handleImagePaste(_ image: NSImage) {
         pendingImage = image
         pendingAttachment = saveAttachment(image)
@@ -344,7 +390,14 @@ struct ChatView: View {
                     Spacer(minLength: 50)
                     LazyVStack(alignment: .leading, spacing: 20) {
                         ForEach(viewModel.messages) { msg in
-                            MessageBubble(message: msg, projectDir: projectDir)
+                            // Offer "Consult the big model" only on the latest local
+                            // answer (not streaming, not already a cloud turn).
+                            let canConsult = msg.id == viewModel.messages.last?.id
+                                && msg.role == .assistant
+                                && !msg.isStreaming
+                                && !(msg.model?.contains("cloud") ?? false)
+                            MessageBubble(message: msg, projectDir: projectDir,
+                                          onConsult: canConsult ? { consult() } : nil)
                                 .equatable()
                                 .id(msg.id)
                         }

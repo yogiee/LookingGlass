@@ -54,6 +54,7 @@ async def chat_stream(
     user_name: str | None = None,
     mcp_hints_enabled: dict[str, bool] | None = None,
     research_mode: bool = False,
+    specialist_mode: bool = False,
 ) -> AsyncIterator[dict]:
     """Agentic loop:
 
@@ -81,16 +82,32 @@ async def chat_stream(
     # the project's [models] table first, then the global routing table.
     # When the user picks a specific model in Swift, `model` is set and we skip routing.
     # Research mode always routes to the research model regardless of message content.
-    # Explicit model picker still wins — user knows what they're doing.
-    if model is None and research_mode:
+    # Deep-research ALWAYS routes to the research model — even when the user has a
+    # specific model pinned. Pressing the research button is an explicit "take this
+    # deep" intent that overrides the picker (and is the consent to use the large
+    # cloud research model). Outside research mode, an explicit pick wins; otherwise
+    # the keyword classifier routes.
+    if research_mode:
         mode = "research"
+        resolved_model = (
+            project_model_for_mode(project_cfg, config.models, "research")
+            or config.default_model
+        )
+    elif specialist_mode:
+        # Per-turn "consult the big model" — routes to the specialist regardless of the
+        # picker (the user's tap is the explicit intent + consent). No skill inlining.
+        mode = "specialist"
+        resolved_model = (
+            project_model_for_mode(project_cfg, config.models, "specialist")
+            or config.default_model
+        )
     else:
         mode = classify_mode(messages) if model is None else "default"
-    resolved_model = (
-        model
-        or project_model_for_mode(project_cfg, config.models, mode)
-        or config.default_model
-    )
+        resolved_model = (
+            model
+            or project_model_for_mode(project_cfg, config.models, mode)
+            or config.default_model
+        )
 
     base_prompt = system_prompt if (system_prompt and system_prompt.strip()) else config.system_prompt
     if user_name and user_name.strip():
@@ -236,6 +253,14 @@ async def chat_stream(
                                     print(f"[agent] Ollama {response.status_code}, retry "
                                           f"{ollama_attempt}/{MAX_OLLAMA_RETRIES}: {detail[:120]}")
                                     retry_turn = True
+                                elif response.status_code == 429:
+                                    # Cloud rate limit (free tier). Don't silently fall
+                                    # back to a local model — tell the user the tier is
+                                    # unavailable so the quality change is never hidden.
+                                    yield {"type": "error", "message":
+                                           "The cloud model is rate-limited right now (free tier). "
+                                           "Give it a moment and try again, or pick a local model for now."}
+                                    return
                                 else:
                                     msg = f"Ollama HTTP {response.status_code}"
                                     if detail:

@@ -77,8 +77,10 @@ struct ModelSelectorPanel: View {
                     Divider()
                     ForEach(models, id: \.self) { model in
                         ModelRow(
+                            // Cloud models run off-machine — badge so selecting one is
+                            // informed consent (picking a cloud model = chat-wide consent).
                             name: model,
-                            badge: modelBadges[model],
+                            badge: model.contains("cloud") ? "☁ cloud" : modelBadges[model],
                             tint: familyColor(for: model),
                             isSelected: model == selectedModel,
                             onTap: { selectedModel = model }
