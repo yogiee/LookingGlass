@@ -6,6 +6,26 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.4</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.4 — Alice tells the truth (quality fixes)</h3>
+        <ul>
+          <li>Alice no longer fabricates confident details about things she doesn't actually know (films, books, people, dates). She now admits when she's unsure, looks it up, and tells you what she found</li>
+          <li>New default chat model: gemma4:12b — doesn't confabulate world-knowledge the way the previous default did, and holds Alice's voice. The faster model is still available per-chat via Settings → Model</li>
+          <li>Fixes an occasional "Ollama HTTP 500" error appearing as a reply after a tool call — the agent now retries transparently</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 18 Jun 2026 21:02:00 +0530</pubDate>
+      <sparkle:version>15</sparkle:version>
+      <sparkle:shortVersionString>0.8.4</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.4/LookingGlass.dmg"
+        sparkle:edSignature="gGzV/pCN3DADJEZA7OLG+ZEL+PHRwD9eh27HIckXLqQGiloe+Ajrfix9FEq8UEiZJuJVLwLyL/UFHvYONP3aAg=="
+        length="46965659"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.3</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.3 — hotfix: sidecar startup after Homebrew Python upgrade</h3>

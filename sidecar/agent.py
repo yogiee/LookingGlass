@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import time
@@ -207,56 +208,83 @@ async def chat_stream(
                 tool_calls: list[dict] = []
                 turn_emitted = False   # has THIS turn emitted text yet?
 
-                try:
-                    async with client.stream("POST", f"{host}/api/chat", json=payload) as response:
-                        if response.status_code >= 400:
-                            # Surface Ollama's actual reason (model not found, OOM,
-                            # bad request…) instead of an opaque status code. Must
-                            # read the body inside the stream context.
-                            body = await response.aread()
-                            detail = body.decode("utf-8", "replace").strip()
-                            msg = f"Ollama HTTP {response.status_code}"
-                            if detail:
-                                msg += f": {detail[:500]}"
-                            yield {"type": "error", "message": msg}
-                            return
-                        async for line in response.aiter_lines():
-                            if not line.strip():
-                                continue
-                            try:
-                                data = json.loads(line)
-                            except json.JSONDecodeError:
-                                continue
+                # Small local models intermittently emit a malformed tool-call block
+                # (e.g. `<function>…</parameter>`) that Ollama's tool parser rejects
+                # with a 5xx *before* any tokens stream — measured ~12% per attempt on
+                # qwen3.5:4b. The output is stochastic, so re-issuing the identical
+                # request almost always succeeds (~0.2% residual after 2 retries).
+                # Nothing has streamed for this turn at the status check, so the retry
+                # is safe — no duplicated content. (404/400 are NOT retried.)
+                MAX_OLLAMA_RETRIES = 3
+                ollama_attempt = 0
+                while True:
+                    assistant_content = ""
+                    tool_calls = []
+                    turn_emitted = False
+                    retry_turn = False
 
-                            msg = data.get("message", {})
-                            content = msg.get("content", "")
-                            if content:
-                                # Separate a new turn's text from the previous turn's
-                                # so post-tool narration doesn't run together (e.g.
-                                # "…for.Hmm" or "…names:Yes").
-                                if streamed_content and not turn_emitted:
-                                    yield {"type": "content_delta", "text": "\n\n"}
-                                turn_emitted = True
-                                streamed_content = True
-                                assistant_content += content
-                                yield {"type": "content_delta", "text": content}
+                    try:
+                        async with client.stream("POST", f"{host}/api/chat", json=payload) as response:
+                            if response.status_code >= 400:
+                                # Surface Ollama's actual reason (model not found, OOM,
+                                # bad request…) instead of an opaque status code. Must
+                                # read the body inside the stream context.
+                                body = await response.aread()
+                                detail = body.decode("utf-8", "replace").strip()
+                                if response.status_code >= 500 and ollama_attempt < MAX_OLLAMA_RETRIES:
+                                    ollama_attempt += 1
+                                    print(f"[agent] Ollama {response.status_code}, retry "
+                                          f"{ollama_attempt}/{MAX_OLLAMA_RETRIES}: {detail[:120]}")
+                                    retry_turn = True
+                                else:
+                                    msg = f"Ollama HTTP {response.status_code}"
+                                    if detail:
+                                        msg += f": {detail[:500]}"
+                                    yield {"type": "error", "message": msg}
+                                    return
+                            else:
+                                async for line in response.aiter_lines():
+                                    if not line.strip():
+                                        continue
+                                    try:
+                                        data = json.loads(line)
+                                    except json.JSONDecodeError:
+                                        continue
 
-                            if msg.get("tool_calls"):
-                                tool_calls.extend(msg["tool_calls"])
+                                    msg = data.get("message", {})
+                                    content = msg.get("content", "")
+                                    if content:
+                                        # Separate a new turn's text from the previous
+                                        # turn's so post-tool narration doesn't run
+                                        # together (e.g. "…for.Hmm" or "…names:Yes").
+                                        if streamed_content and not turn_emitted:
+                                            yield {"type": "content_delta", "text": "\n\n"}
+                                        turn_emitted = True
+                                        streamed_content = True
+                                        assistant_content += content
+                                        yield {"type": "content_delta", "text": content}
 
-                            if data.get("done"):
-                                total_in += data.get("prompt_eval_count", 0)
-                                total_out += data.get("eval_count", 0)
+                                    if msg.get("tool_calls"):
+                                        tool_calls.extend(msg["tool_calls"])
 
-                except httpx.ConnectError:
-                    yield {"type": "error", "message": f"Ollama not reachable at {host}"}
-                    return
-                except httpx.HTTPStatusError as e:
-                    yield {"type": "error", "message": f"Ollama HTTP {e.response.status_code}"}
-                    return
-                except Exception as e:
-                    yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
-                    return
+                                    if data.get("done"):
+                                        total_in += data.get("prompt_eval_count", 0)
+                                        total_out += data.get("eval_count", 0)
+
+                    except httpx.ConnectError:
+                        yield {"type": "error", "message": f"Ollama not reachable at {host}"}
+                        return
+                    except httpx.HTTPStatusError as e:
+                        yield {"type": "error", "message": f"Ollama HTTP {e.response.status_code}"}
+                        return
+                    except Exception as e:
+                        yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+                        return
+
+                    if retry_turn:
+                        await asyncio.sleep(0.25)
+                        continue
+                    break
 
                 print(f"[agent] turn {turn}: {len(tool_calls)} tool call(s), {len(assistant_content)} chars text")
 

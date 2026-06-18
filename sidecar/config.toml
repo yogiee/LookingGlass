@@ -1,7 +1,13 @@
 [model]
-# Chat default. BenchLLAMA 2026-06-10: 4b-mlx confirmed speed-tier winner.
-# 67 tok/s, 4GB, passes cylinder. 9b-mlx is the quality-tier option (Settings → Model).
-default = "qwen3.5:4b-mlx"
+# Chat default. 2026-06-18: switched 4b-mlx → gemma4:12b. 4b confabulates confidently
+# on world-knowledge in casual chat (invents film plots/people/dates) and CANNOT be
+# prompted out of it — it can't detect its own uncertainty, so the honesty clause never
+# fires. Head-to-head on the confabulation case: gemma4:12b = 0/3 fabrication + most
+# natural Alice voice + ties 27b on reasoning; qwen3.5:9b-mlx confabulated worst.
+# Cost: 23.7 tok/s (~3× slower than 4b) — accepted; quality > speed. 4b-mlx and
+# gemma4:latest (faster) remain per-chat options via Settings → Model.
+# See gotcha_small_model_confabulation. Full data: WORKSPACE/model-rankings.md.
+default = "gemma4:12b"
 ollama_host = "http://localhost:11434"
 think = false
 # Context window sent to Ollama (in `options`). The models' OWN default is 262144
@@ -24,7 +30,9 @@ keep_alive = "5m"
 #
 # Rankings source: BenchLLAMA aptitude run 2026-06-10. Full table: WORKSPACE/model-rankings.md.
 #
-# default  — qwen3.5:4b-mlx: speed-tier Alice. 67 tok/s, 4GB, passes cylinder.
+# default  — gemma4:12b: honesty-first Alice. 23.7 tok/s, 7.6GB. Doesn't fabricate
+#            world-knowledge in casual chat (4b did, unfixably). 4b-mlx (speed) and
+#            gemma4:latest (58 tok/s, near-as-safe) are per-chat options via Settings.
 # research — qwen3.5:9b-mlx: research-aware Alice. 41 tok/s, 9GB, 6/7 JPEG, better depth.
 #            For max depth: select qwen3.5:27b-mlx manually via Settings → Model.
 #            27b-mlx is the benchmark winner but hits 5-10s/word under RAM pressure —
@@ -35,7 +43,7 @@ keep_alive = "5m"
 # Router model (llama3.2:3b, 10/10 classify, 177 tok/s) — not yet wired into sidecar.
 # Currently routing is keyword-based (router.py). Neural router is a future improvement.
 [models]
-default  = "qwen3.5:4b-mlx"
+default  = "gemma4:12b"
 coding   = "gemma4:12b"
 research = "qwen3.5:9b-mlx"
 
