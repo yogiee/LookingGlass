@@ -309,6 +309,7 @@ async def chat_stream(
                                "latency_ms": 0}
                     yield {
                         "type": "message_end",
+                        "model": resolved_model,
                         "usage": {"input_tokens": total_in, "output_tokens": total_out},
                     }
                     return
@@ -392,6 +393,7 @@ async def chat_stream(
             # Hit the turn ceiling without the model settling.
             yield {
                 "type": "message_end",
+                "model": resolved_model,
                 "usage": {"input_tokens": total_in, "output_tokens": total_out},
             }
     finally:

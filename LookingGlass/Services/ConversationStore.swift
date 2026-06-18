@@ -104,11 +104,11 @@ final class ConversationStore: ObservableObject {
                     SELECT COALESCE(MAX(position), -1) + 1 FROM messages WHERE conversation_id = ?
                     """, arguments: [conversationID.uuidString]) ?? 0
                 try db.execute(sql: """
-                    INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, created_at, position)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, created_at, position, model)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, arguments: [
                         message.id.uuidString, conversationID.uuidString,
-                        message.role.rawValue, message.content, toolJSON, now, nextPos,
+                        message.role.rawValue, message.content, toolJSON, now, nextPos, message.model,
                     ])
                 try db.execute(sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
                                arguments: [now, conversationID.uuidString])
@@ -248,7 +248,7 @@ final class ConversationStore: ObservableObject {
     func loadMessages(_ conversationID: UUID) -> [Message] {
         let rows = (try? dbQueue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT id, role, content, tool_calls_json
+                SELECT id, role, content, tool_calls_json, model
                 FROM messages WHERE conversation_id = ? ORDER BY position ASC
                 """, arguments: [conversationID.uuidString])
         }) ?? []
@@ -259,7 +259,8 @@ final class ConversationStore: ObservableObject {
             else { return nil }
             let content: String = row["content"] ?? ""
             let tools = Self.decodeToolCalls(row["tool_calls_json"])
-            return Message(id: id, role: role, content: content, isStreaming: false, toolCalls: tools)
+            let model: String? = row["model"]
+            return Message(id: id, role: role, content: content, isStreaming: false, toolCalls: tools, model: model)
         }
     }
 
@@ -486,6 +487,12 @@ final class ConversationStore: ObservableObject {
         }
         migrator.registerMigration("v2_project_color") { db in
             try db.execute(sql: "ALTER TABLE projects ADD COLUMN color TEXT")
+        }
+        // Per-message resolved model (diagnostic): which model produced each turn.
+        // Nullable — user turns and pre-v3 history stay NULL. Captures mid-conversation
+        // model switches since it's stamped per assistant message, not per conversation.
+        migrator.registerMigration("v3_message_model") { db in
+            try db.execute(sql: "ALTER TABLE messages ADD COLUMN model TEXT")
         }
         return migrator
     }

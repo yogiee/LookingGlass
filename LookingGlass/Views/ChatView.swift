@@ -183,8 +183,10 @@ class ChatViewModel: ObservableObject {
                 }
             }
             toolCallStore?.recordResult(id: id, success: success, result: result)
-        case .messageEnd:
-            break
+        case .messageEnd(let model, _, _):
+            // Stamp the resolved model on this turn so it persists (and survives a
+            // mid-conversation model switch — each assistant turn records its own).
+            if let model { messages[idx].model = model }
         case .error(let msg):
             if messages[idx].content.isEmpty {
                 messages[idx].content = msg.isEmpty ? "Something went wrong." : msg

@@ -29,7 +29,7 @@ enum ChatEvent {
     case contentDelta(String)
     case toolCallStart(id: String, tool: String, argsJSON: String)
     case toolCallResult(id: String, success: Bool, result: String, latencyMs: Int)
-    case messageEnd(inputTokens: Int, outputTokens: Int)
+    case messageEnd(model: String?, inputTokens: Int, outputTokens: Int)
     case error(String)
 }
 
@@ -130,6 +130,7 @@ class SidecarClient {
                         case "message_end":
                             let usage = obj["usage"] as? [String: Int] ?? [:]
                             continuation.yield(.messageEnd(
+                                model: obj["model"] as? String,
                                 inputTokens: usage["input_tokens"] ?? 0,
                                 outputTokens: usage["output_tokens"] ?? 0
                             ))
