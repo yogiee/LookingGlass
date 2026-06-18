@@ -6,6 +6,25 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.7</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.7 — smarter, faster default (gemma4:26b)</h3>
+        <ul>
+          <li>New default chat model: gemma4:26b — bigger and noticeably faster than the previous default, with the same honest Alice voice. A clear quality + speed upgrade on Apple Silicon.</li>
+          <li>The lighter gemma4:12b remains available as a low-RAM option via Settings → Model.</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 19 Jun 2026 03:16:26 +0530</pubDate>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>0.8.7</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.7/LookingGlass.dmg"
+        sparkle:edSignature="bkuWj35J3NpQufygOloE891x3+wXiSgcVWEYNSYhe+zAvpbYFFn0+PQo01xuo/zt3EOE+8TerS3tzjPo+bN0Bw=="
+        length="46983191"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.6</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.6 — Consult the big model</h3>
