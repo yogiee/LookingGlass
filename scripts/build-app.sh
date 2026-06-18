@@ -17,8 +17,8 @@ BUILD_DIR="$PROJECT_DIR/build"
 APP_NAME="LookingGlass"          # bundle + binary name (no spaces)
 DISPLAY_NAME="Looking Glass"     # shown in Finder / Dock / menu bar
 BUNDLE_ID="com.yogi.LookingGlass"
-VERSION="0.8.2"
-BUILD_NUMBER="13"
+VERSION="0.8.3"
+BUILD_NUMBER="14"
 
 # Shared EdDSA public key for Sparkle (private key in Keychain, machine-bound).
 SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-k47OPDePNJN2Iyiu28Hz73RzNv/GHyryeSPWvGhv1+c=}"
@@ -84,8 +84,11 @@ rsync -a --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
 # bump (3.14.5 → 3.14.6) deletes that exact dir, so the embedded python can no
 # longer load its own runtime → the sidecar never starts → the app shows
 # "Ollama offline". Repoint to the stable unversioned `opt` symlink, which always
-# tracks the current build and is ABI-stable across patch releases. The deep
-# codesign in step 8 re-signs these, so no manual re-sign is needed.
+# tracks the current build and is ABI-stable across patch releases.
+# install_name_tool invalidates the code signature, and the step-8 `codesign
+# --deep` does NOT descend into these loose Resources executables — so each
+# interpreter MUST be ad-hoc re-signed right here, or the kernel kills the
+# sidecar on launch (same "Ollama offline" symptom, signature cause).
 VENV_BIN="$SIDECAR_DST/.venv/bin"
 OLD_DYLIB="$(otool -L "$VENV_BIN/python3" 2>/dev/null | awk '/Cellar\/python@/{print $1; exit}')"
 if [ -n "$OLD_DYLIB" ]; then
@@ -93,9 +96,11 @@ if [ -n "$OLD_DYLIB" ]; then
     NEW_DYLIB="$(printf '%s' "$OLD_DYLIB" | sed -E 's#/Cellar/(python@[0-9.]+)/[^/]+/#/opt/\1/#')"
     if [ -f "$NEW_DYLIB" ]; then
         for b in python python3 python3.* ; do
-            [ -f "$VENV_BIN/$b" ] && install_name_tool -change "$OLD_DYLIB" "$NEW_DYLIB" "$VENV_BIN/$b" 2>/dev/null || true
+            [ -f "$VENV_BIN/$b" ] || continue
+            install_name_tool -change "$OLD_DYLIB" "$NEW_DYLIB" "$VENV_BIN/$b" 2>/dev/null || true
+            codesign --force --sign - "$VENV_BIN/$b" 2>/dev/null || true   # re-sign: each is a separate copy
         done
-        echo "        repointed venv interpreter → $NEW_DYLIB (survives brew patch upgrades)"
+        echo "        repointed + re-signed venv interpreters → $NEW_DYLIB (survives brew patch upgrades)"
     fi
 fi
 

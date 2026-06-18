@@ -6,6 +6,25 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.3</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.3 — hotfix: sidecar startup after Homebrew Python upgrade</h3>
+        <ul>
+          <li>Fixes "Ollama offline" on launch caused by the embedded Python sidecar failing to start after a Homebrew Python patch upgrade (the bundled interpreter linked to a version-pinned path that gets deleted on upgrade)</li>
+          <li>The embedded interpreter now links to a stable path and is re-signed at build time, so it survives future Homebrew Python patch upgrades</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 18 Jun 2026 19:46:46 +0530</pubDate>
+      <sparkle:version>14</sparkle:version>
+      <sparkle:shortVersionString>0.8.3</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.3/LookingGlass.dmg"
+        sparkle:edSignature="pbTuZybVJdbK+M/7Nc0kj/o4UYJfHbdmMSaUq89AtVGAzTJJMpR8mLlgLzVAAH2lunXhKkcLD4nX8qQerA8yCA=="
+        length="46963563"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.2</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.2 — Apple Intelligence utilities + faster default model</h3>
