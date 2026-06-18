@@ -1,13 +1,13 @@
 [model]
-# Chat default. 2026-06-18: switched 4b-mlx → gemma4:12b. 4b confabulates confidently
-# on world-knowledge in casual chat (invents film plots/people/dates) and CANNOT be
-# prompted out of it — it can't detect its own uncertainty, so the honesty clause never
-# fires. Head-to-head on the confabulation case: gemma4:12b = 0/3 fabrication + most
-# natural Alice voice + ties 27b on reasoning; qwen3.5:9b-mlx confabulated worst.
-# Cost: 23.7 tok/s (~3× slower than 4b) — accepted; quality > speed. 4b-mlx and
-# gemma4:latest (faster) remain per-chat options via Settings → Model.
-# See gotcha_small_model_confabulation. Full data: WORKSPACE/model-rankings.md.
-default = "gemma4:12b"
+# Chat default. 2026-06-19: gemma4:12b → gemma4:26b (GGUF). Measured on M1 Max 32GB:
+# 48.5 tok/s (faster than 12b@23.7 AND 26b-mlx@43.3), 17GB 100% GPU, honest + full Alice
+# voice. CRUCIALLY GGUF honors num_ctx → KV is leashed (CONTEXT 16384, bounded regardless
+# of chat length); the MLX path IGNORES num_ctx (unbounded KV → OOM risk on marathon chats)
+# so 26b-mlx was rejected as default despite similar speed. Same gemma4 family = same voice.
+# Cost: 17GB resident during active use (unloads after keep_alive idle). 12b stays the lean
+# fallback; 4b-mlx (speed) + gemma4:latest are per-chat picks via Settings → Model.
+# See gotcha_small_model_confabulation + reference_ollama_cloud_models (MLX num_ctx gotcha).
+default = "gemma4:26b"
 ollama_host = "http://localhost:11434"
 think = false
 # Context window sent to Ollama (in `options`). The models' OWN default is 262144
@@ -30,9 +30,9 @@ keep_alive = "5m"
 #
 # Rankings source: BenchLLAMA aptitude run 2026-06-10. Full table: WORKSPACE/model-rankings.md.
 #
-# default  — gemma4:12b: honesty-first Alice. 23.7 tok/s, 7.6GB. Doesn't fabricate
-#            world-knowledge in casual chat (4b did, unfixably). 4b-mlx (speed) and
-#            gemma4:latest (58 tok/s, near-as-safe) are per-chat options via Settings.
+# default  — gemma4:26b (GGUF): honesty-first Alice. 48.5 tok/s, 17GB, num_ctx-leashed.
+#            Beats 12b on speed + capability; same voice. 12b = lean fallback (7.6GB).
+#            4b-mlx (speed) + gemma4:latest are per-chat options via Settings → Model.
 # research — gpt-oss:120b-cloud: deep-research routes to a LARGE CLOUD model (2026-06-19).
 #            Local 27b/31b-mlx were dropped (slow on 32GB: ~11-14 tok/s); depth lives in
 #            cloud now (fast + 0 local RAM). Deep-research ALWAYS uses this, overriding the
@@ -51,7 +51,7 @@ keep_alive = "5m"
 #            with no framing. Invoked only by an explicit user tap (consent). See
 #            design_alice_hybrid_butler_specialists.
 [models]
-default    = "gemma4:12b"
+default    = "gemma4:26b"
 coding     = "gemma4:12b"
 research   = "gpt-oss:120b-cloud"
 specialist = "gemma4:31b-cloud"
