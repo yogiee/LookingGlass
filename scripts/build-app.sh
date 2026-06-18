@@ -79,6 +79,26 @@ rsync -a --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
 "$SIDECAR_DST/.venv/bin/pip" install -q --upgrade pip
 "$SIDECAR_DST/.venv/bin/pip" install -q -r "$SIDECAR_DST/requirements.txt"
 
+# `venv --copies` bakes the version-PINNED Cellar dylib path into each copied
+# interpreter (e.g. .../Cellar/python@3.14/3.14.5/.../Python). A Homebrew patch
+# bump (3.14.5 → 3.14.6) deletes that exact dir, so the embedded python can no
+# longer load its own runtime → the sidecar never starts → the app shows
+# "Ollama offline". Repoint to the stable unversioned `opt` symlink, which always
+# tracks the current build and is ABI-stable across patch releases. The deep
+# codesign in step 8 re-signs these, so no manual re-sign is needed.
+VENV_BIN="$SIDECAR_DST/.venv/bin"
+OLD_DYLIB="$(otool -L "$VENV_BIN/python3" 2>/dev/null | awk '/Cellar\/python@/{print $1; exit}')"
+if [ -n "$OLD_DYLIB" ]; then
+    # /opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/... → /opt/homebrew/opt/python@3.14/Frameworks/...
+    NEW_DYLIB="$(printf '%s' "$OLD_DYLIB" | sed -E 's#/Cellar/(python@[0-9.]+)/[^/]+/#/opt/\1/#')"
+    if [ -f "$NEW_DYLIB" ]; then
+        for b in python python3 python3.* ; do
+            [ -f "$VENV_BIN/$b" ] && install_name_tool -change "$OLD_DYLIB" "$NEW_DYLIB" "$VENV_BIN/$b" 2>/dev/null || true
+        done
+        echo "        repointed venv interpreter → $NEW_DYLIB (survives brew patch upgrades)"
+    fi
+fi
+
 # ── 5. Info.plist ────────────────────────────────────────────────────────────
 echo "  [5/8] Writing Info.plist..."
 cat > "$APP/Contents/Info.plist" << PLIST
