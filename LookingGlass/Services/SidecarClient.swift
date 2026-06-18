@@ -61,7 +61,8 @@ class SidecarClient {
         projectDir: String?,
         userName: String? = nil,
         mcpHintsEnabled: [String: Bool]? = nil,
-        researchMode: Bool = false
+        researchMode: Bool = false,
+        specialistMode: Bool = false
     ) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -91,6 +92,7 @@ class SidecarClient {
                         body["mcp_hints_enabled"] = mcpHintsEnabled
                     }
                     if researchMode { body["research_mode"] = true }
+                    if specialistMode { body["specialist_mode"] = true }
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)

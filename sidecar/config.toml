@@ -33,19 +33,28 @@ keep_alive = "5m"
 # default  — gemma4:12b: honesty-first Alice. 23.7 tok/s, 7.6GB. Doesn't fabricate
 #            world-knowledge in casual chat (4b did, unfixably). 4b-mlx (speed) and
 #            gemma4:latest (58 tok/s, near-as-safe) are per-chat options via Settings.
-# research — qwen3.5:9b-mlx: research-aware Alice. 41 tok/s, 9GB, 6/7 JPEG, better depth.
-#            For max depth: select qwen3.5:27b-mlx manually via Settings → Model.
-#            27b-mlx is the benchmark winner but hits 5-10s/word under RAM pressure —
-#            reserved for deliberate deep-research sessions, not auto-routed.
+# research — gpt-oss:120b-cloud: deep-research routes to a LARGE CLOUD model (2026-06-19).
+#            Local 27b/31b-mlx were dropped (slow on 32GB: ~11-14 tok/s); depth lives in
+#            cloud now (fast + 0 local RAM). Deep-research ALWAYS uses this, overriding the
+#            picker (the research button = explicit consent to use cloud). gpt-oss:120b =
+#            max free-tier reasoning depth; voice is mechanical but research output is a
+#            report artifact + handoff, so depth wins. In-voice alternative: gemma4:31b-cloud
+#            (shallower). See design_alice_hybrid_butler_specialists / reference_ollama_cloud_models.
 # coding   — gemma4:12b: tool quality worker. 4/4 D7+D8, think_ok. Upgrade from gemma4:latest.
 #            gemma4:latest remains the fallback if 12b is not installed.
 #
 # Router model (llama3.2:3b, 10/10 classify, 177 tok/s) — not yet wired into sidecar.
 # Currently routing is keyword-based (router.py). Neural router is a future improvement.
+# specialist — the per-turn "Consult the big model" escalation target (Phase 1a). Unlike
+#            `research` (depth-first artifact → gpt-oss), this is the IN-VOICE escalation:
+#            gemma4:31b-cloud holds Alice's voice, so escalate-the-turn yields depth + voice
+#            with no framing. Invoked only by an explicit user tap (consent). See
+#            design_alice_hybrid_butler_specialists.
 [models]
-default  = "gemma4:12b"
-coding   = "gemma4:12b"
-research = "qwen3.5:9b-mlx"
+default    = "gemma4:12b"
+coding     = "gemma4:12b"
+research   = "gpt-oss:120b-cloud"
+specialist = "gemma4:31b-cloud"
 
 [server]
 port = 8765

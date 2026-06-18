@@ -6,6 +6,26 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.6</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.6 — Consult the big model</h3>
+        <ul>
+          <li>New "Consult the big model" action on Alice's replies: when a local answer isn't deep enough, tap to re-run that question on a larger cloud model — Alice will also suggest it herself on genuinely hard asks. Your conversation only leaves the machine when you tap.</li>
+          <li>Deep Research now runs on a large cloud model for much greater depth, regardless of the model picker.</li>
+          <li>Cloud models are clearly badged in the model picker, and cloud-generated replies are marked — so it's always obvious when an answer left your machine.</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 19 Jun 2026 02:05:02 +0530</pubDate>
+      <sparkle:version>17</sparkle:version>
+      <sparkle:shortVersionString>0.8.6</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.6/LookingGlass.dmg"
+        sparkle:edSignature="vg+fW0RGhafRsvUwI6Vz9dsoo3PWJ8VFp5LBSCIPZOCgU45TLqUL7dVF+c+ije8nqgpOvnq5omf9Kg8MTWElAQ=="
+        length="46983253"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.5</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.5 — honesty polish + model tracking</h3>

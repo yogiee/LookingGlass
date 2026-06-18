@@ -106,7 +106,8 @@ class ChatRequest(BaseModel):
     working_dir: str | None = None          # tool output scope; sidecar derives it when absent
     user_name: str | None = None            # prepended to system prompt as "The user's name is X."
     mcp_hints_enabled: dict[str, bool] | None = None  # per-server MCP prompt injection toggle
-    research_mode: bool = False               # forces deep-research skill + 27B model
+    research_mode: bool = False               # forces deep-research skill + research model
+    specialist_mode: bool = False             # per-turn "consult the big model" — routes to [models].specialist, overrides pick
 
 
 def _host_for(override: str | None) -> str:
@@ -293,6 +294,7 @@ async def chat(request: ChatRequest):
                 user_name=request.user_name,
                 mcp_hints_enabled=request.mcp_hints_enabled,
                 research_mode=request.research_mode,
+                specialist_mode=request.specialist_mode,
             ):
                 yield {"data": json.dumps(event)}
         except Exception as e:
