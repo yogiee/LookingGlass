@@ -6,6 +6,25 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.5</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.5 — honesty polish + model tracking</h3>
+        <ul>
+          <li>Alice is sharper about not faking it: she no longer answers "yes, I know it" when you mention something she hasn't verified, and when she looks something up she now tells you what she found before continuing</li>
+          <li>Each reply now records which model produced it (including mid-conversation model switches) — groundwork for clearer diagnostics and model comparison</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 19 Jun 2026 01:33:07 +0530</pubDate>
+      <sparkle:version>16</sparkle:version>
+      <sparkle:shortVersionString>0.8.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.5/LookingGlass.dmg"
+        sparkle:edSignature="d8Ozhn2ZgpB0bkWYdKdRAiyk/1jjhO4/zVPNIcCBYWy/bmLBwyi6np5rblrYMg6plu1Vj3A6oIYs7cWI5G2EBw=="
+        length="46965179"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.4</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.4 — Alice tells the truth (quality fixes)</h3>
