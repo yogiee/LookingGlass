@@ -520,13 +520,30 @@ final class ConversationStore: ObservableObject {
         // Per-message resolved model (diagnostic): which model produced each turn.
         // Nullable — user turns and pre-v3 history stay NULL. Captures mid-conversation
         // model switches since it's stamped per assistant message, not per conversation.
-        migrator.registerMigration("v3_message_model") { db in
+        //
+        // foreignKeyChecks: .immediate — a plain ADD COLUMN creates no new FK violations,
+        // but the default .deferred mode runs a FULL-TABLE foreign_key_check at commit,
+        // which aborts the whole migrator if any pre-existing orphan row exists (e.g. a
+        // message whose conversation was deleted while FKs were off). That would strand a
+        // DB at v2 and block every later migration. .immediate only enforces FKs for rows
+        // this migration touches (none), so it's safe here and on any column-add. Both
+        // migrations are column-adds, never table recreations, so .immediate is valid.
+        migrator.registerMigration("v3_message_model", foreignKeyChecks: .immediate) { db in
             try db.execute(sql: "ALTER TABLE messages ADD COLUMN model TEXT")
         }
         // Per-conversation model override (input-bar switcher). Nullable: NULL = follow
         // the global default. Non-NULL = sticky pick for this chat, survives reopen.
-        migrator.registerMigration("v4_conversation_model") { db in
+        migrator.registerMigration("v4_conversation_model", foreignKeyChecks: .immediate) { db in
             try db.execute(sql: "ALTER TABLE conversations ADD COLUMN model_override TEXT")
+        }
+        // Hygiene: purge orphaned messages (conversation deleted while FKs were off) so
+        // PRAGMA foreign_key_check is clean again and they stop polluting the FTS index.
+        // Deletes only unreachable rows — loadMessages already filters by conversation_id.
+        migrator.registerMigration("v5_purge_orphan_messages") { db in
+            try db.execute(sql: """
+                DELETE FROM messages
+                WHERE conversation_id NOT IN (SELECT id FROM conversations)
+                """)
         }
         return migrator
     }
