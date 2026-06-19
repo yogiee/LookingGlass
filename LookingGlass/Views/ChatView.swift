@@ -286,11 +286,11 @@ struct ChatView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             messageList
-            // Easter egg: Alice watches from the center until the first chat loads.
-            // Once messages exist there's no way back — she only appears on fresh launch.
+            // Alice watches from the center until the first chat loads, with a comic
+            // speech bubble (tap to re-roll). Hit-testing stays ON so the bubble is
+            // tappable; only the bubble carries a gesture, so empty-area taps do nothing.
             if viewModel.messages.isEmpty {
-                aliceEmptyState
-                    .allowsHitTesting(false)
+                AliceEmptyState()
                     .transition(.opacity)
             }
             // Research progress banner + input bar stacked so banner sits flush above
@@ -349,15 +349,6 @@ struct ChatView: View {
             viewModel.messages.append(notice)
             store.appendMessage(notice, to: cid)
         }
-    }
-
-    private var aliceEmptyState: some View {
-        Asset.image("alice")
-            .scaledToFill()
-            .frame(width: 140, height: 140)
-            .clipShape(Circle())
-            .opacity(0.55)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func submit() {
