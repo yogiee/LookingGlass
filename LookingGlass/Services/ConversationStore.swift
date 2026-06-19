@@ -135,6 +135,35 @@ final class ConversationStore: ObservableObject {
         reload()
     }
 
+    /// The per-chat model override, or nil if the chat follows the global default.
+    func conversationModel(_ conversationID: UUID) -> String? {
+        do {
+            return try dbQueue.read { db in
+                try String.fetchOne(
+                    db,
+                    sql: "SELECT model_override FROM conversations WHERE id = ?",
+                    arguments: [conversationID.uuidString]
+                )
+            }
+        } catch {
+            print("[store] conversationModel failed: \(error)")
+            return nil
+        }
+    }
+
+    /// Set (or clear, with nil) a chat's model override. Does not touch updated_at —
+    /// picking a model isn't activity, so it shouldn't reorder the sidebar.
+    func setConversationModel(_ model: String?, for conversationID: UUID) {
+        do {
+            try dbQueue.write { db in
+                try db.execute(sql: "UPDATE conversations SET model_override = ? WHERE id = ?",
+                               arguments: [model, conversationID.uuidString])
+            }
+        } catch {
+            print("[store] setConversationModel failed: \(error)")
+        }
+    }
+
     /// Move a conversation into a project (or back to independent with nil).
     func moveConversation(_ conversationID: UUID, toProject projectID: UUID?) {
         do {
@@ -493,6 +522,11 @@ final class ConversationStore: ObservableObject {
         // model switches since it's stamped per assistant message, not per conversation.
         migrator.registerMigration("v3_message_model") { db in
             try db.execute(sql: "ALTER TABLE messages ADD COLUMN model TEXT")
+        }
+        // Per-conversation model override (input-bar switcher). Nullable: NULL = follow
+        // the global default. Non-NULL = sticky pick for this chat, survives reopen.
+        migrator.registerMigration("v4_conversation_model") { db in
+            try db.execute(sql: "ALTER TABLE conversations ADD COLUMN model_override TEXT")
         }
         return migrator
     }

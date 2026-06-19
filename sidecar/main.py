@@ -1,3 +1,4 @@
+import asyncio
 import json
 import shutil
 import tomllib
@@ -24,6 +25,21 @@ def load_config() -> dict:
         return tomllib.load(f)
 
 
+def load_model_registry() -> dict:
+    """Our hand-maintained OPINION of known chat models (role/tier/speed/note),
+    keyed by Ollama tag. Pure metadata — installed/capable stay live from Ollama.
+    Re-read at startup; missing file is fine (everything just shows as 'untested')."""
+    path = BASE_DIR / "models.toml"
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f).get("models", {})
+    except Exception as e:
+        print(f"[sidecar] models.toml load failed: {e}")
+        return {}
+
+
 def load_user_mcp_servers() -> list[dict]:
     if not MCP_USER_FILE.is_file():
         return []
@@ -38,6 +54,7 @@ def save_user_mcp_servers(servers: list[dict]) -> None:
 
 
 config = load_config()
+MODEL_REGISTRY = load_model_registry()
 
 system_prompt_path = BASE_DIR / config["agent"]["system_prompt_path"]
 system_prompt = system_prompt_path.read_text()
@@ -138,8 +155,51 @@ async def models(ollama_host: str | None = None):
         async with httpx.AsyncClient() as client:
             r = await client.get(f"{host}/api/tags", timeout=5.0)
             r.raise_for_status()
-            data = r.json()
-            return {"models": [m["name"] for m in data.get("models", [])]}
+            names = [m["name"] for m in r.json().get("models", [])]
+
+            # The picker is for chatting, so show only chat-capable models. Ollama
+            # tags each model's capabilities via /api/show; embedding-only and
+            # image-gen models lack "completion" and would error if chatted with, so
+            # they're hidden. Probes run concurrently; fail-open on a probe error so a
+            # transient hiccup never hides a usable model.
+            async def is_chat(name: str) -> bool:
+                try:
+                    resp = await client.post(f"{host}/api/show", json={"model": name}, timeout=5.0)
+                    caps = resp.json().get("capabilities") or []
+                    return "completion" in caps if caps else True
+                except Exception:
+                    return True
+            flags = await asyncio.gather(*(is_chat(n) for n in names))
+
+            # Live (installed ∩ chat-capable) LEFT JOIN our opinion (models.toml).
+            # Installed+capable models absent from the registry still show, tagged
+            # "untested" — honest, not hidden. Registry is opinion only.
+            out: list[dict] = []
+            for name, ok in zip(names, flags):
+                if not ok:
+                    continue
+                opinion = MODEL_REGISTRY.get(name)
+                entry: dict = {"name": name, "capable": True}
+                if opinion:
+                    entry.update({
+                        "role": opinion.get("role"),
+                        "tier": opinion.get("tier"),
+                        "tokps": opinion.get("tokps"),
+                        "ram_gb": opinion.get("ram_gb"),
+                        "location": opinion.get("location", "local"),
+                        "recommended": opinion.get("recommended", False),
+                        "note": opinion.get("note"),
+                        "untested": False,
+                    })
+                else:
+                    # Name carries the only live cloud signal when there's no opinion.
+                    entry.update({
+                        "location": "cloud" if "cloud" in name else "local",
+                        "recommended": False,
+                        "untested": True,
+                    })
+                out.append(entry)
+            return {"models": out}
     except Exception as e:
         return {"models": [], "error": str(e)}
 

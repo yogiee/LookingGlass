@@ -134,7 +134,8 @@ class ChatViewModel: ObservableObject {
             }
             do {
                 for try await event in client.stream(
-                    messages: history,
+                    // System notices are UI-only — never sent to the model.
+                    messages: history.filter { $0.role != .system },
                     model: model,
                     ollamaHost: ollamaHost,
                     enabledTools: enabledTools,
@@ -243,8 +244,14 @@ struct ChatView: View {
     @EnvironmentObject private var store: ConversationStore
     @EnvironmentObject private var toolCallStore: ToolCallStore
     @EnvironmentObject private var reportPanel: ReportPanelState
+    @EnvironmentObject private var catalog: ModelCatalog
     @StateObject private var viewModel = ChatViewModel()
     @StateObject private var inputController = ChatInputController()
+
+    /// This chat's model override (input-bar switcher). nil = follow the global default.
+    /// Loaded from / persisted to the conversation row; held in @State while a fresh
+    /// chat has no row yet (persisted on first send).
+    @State private var chatModelOverride: String?
 
     /// The active conversation's project folder (nil = independent chat) — gates
     /// the per-message "Save to memory" action on assistant bubbles.
@@ -303,9 +310,45 @@ struct ChatView: View {
             if newID != viewModel.loadedConversationID {
                 reportPanel.dismiss()
                 viewModel.load(newID, store: store)
+                chatModelOverride = newID.flatMap { store.conversationModel($0) }
+                reconcileModelOverride()
             }
         }
-        .task { viewModel.toolCallStore = toolCallStore }
+        // Re-run the stale-model guard once the catalog arrives (covers the launch race
+        // where a chat loads before /models has responded).
+        .onChange(of: catalog.models) { _, _ in reconcileModelOverride() }
+        .task {
+            viewModel.toolCallStore = toolCallStore
+            chatModelOverride = store.activeConversationID.flatMap { store.conversationModel($0) }
+        }
+    }
+
+    /// The model this chat will use: its own override, else the global default
+    /// (`selectedModel`; "" ⇒ nil ⇒ sidecar Auto).
+    private var effectiveModel: String? {
+        chatModelOverride ?? (selectedModel.isEmpty ? nil : selectedModel)
+    }
+
+    /// Guard B: if the open chat's override points at a model that's no longer installed,
+    /// drop the override and record the switch in history so it's visible on reopen.
+    private func reconcileModelOverride() {
+        guard catalog.loaded,
+              let cid = viewModel.loadedConversationID,
+              let stale = chatModelOverride,
+              !catalog.contains(stale)
+        else { return }
+        chatModelOverride = nil
+        store.setConversationModel(nil, for: cid)
+        let fallback = selectedModel.isEmpty ? "the default" : selectedModel
+        let notice = Message(
+            role: .system,
+            content: "⚠️ Model “\(stale)” is no longer installed — this chat switched to \(fallback)."
+        )
+        // Avoid duplicate notices if the guard fires twice (load + catalog arrival).
+        if viewModel.messages.last?.content != notice.content {
+            viewModel.messages.append(notice)
+            store.appendMessage(notice, to: cid)
+        }
     }
 
     private var aliceEmptyState: some View {
@@ -322,7 +365,7 @@ struct ChatView: View {
         pendingAttachment = nil
         pendingImage = nil
         viewModel.send(
-            model: selectedModel.isEmpty ? nil : selectedModel,
+            model: effectiveModel,
             ollamaHost: ollamaHost,
             enabledTools: decodedEnabledTools(),
             systemPrompt: systemPrompt.isEmpty ? nil : systemPrompt,
@@ -332,6 +375,19 @@ struct ChatView: View {
             store: store,
             attachmentPath: attachment?.path
         )
+        // send() may have just created the conversation row — persist a pending override.
+        if let override = chatModelOverride, let cid = viewModel.loadedConversationID {
+            store.setConversationModel(override, for: cid)
+        }
+    }
+
+    /// Apply an input-bar switcher pick: nil clears the override (→ global default).
+    /// Persists immediately when the chat already has a row.
+    private func selectChatModel(_ model: String?) {
+        chatModelOverride = model
+        if let cid = viewModel.loadedConversationID {
+            store.setConversationModel(model, for: cid)
+        }
     }
 
     /// "Consult the big model" on the latest answer — escalate to the cloud specialist.
@@ -390,16 +446,21 @@ struct ChatView: View {
                     Spacer(minLength: 50)
                     LazyVStack(alignment: .leading, spacing: 20) {
                         ForEach(viewModel.messages) { msg in
-                            // Offer "Consult the big model" only on the latest local
-                            // answer (not streaming, not already a cloud turn).
-                            let canConsult = msg.id == viewModel.messages.last?.id
-                                && msg.role == .assistant
-                                && !msg.isStreaming
-                                && !(msg.model?.contains("cloud") ?? false)
-                            MessageBubble(message: msg, projectDir: projectDir,
-                                          onConsult: canConsult ? { consult() } : nil)
-                                .equatable()
-                                .id(msg.id)
+                            if msg.role == .system {
+                                SystemNoticeRow(text: msg.content)
+                                    .id(msg.id)
+                            } else {
+                                // Offer "Consult the big model" only on the latest local
+                                // answer (not streaming, not already a cloud turn).
+                                let canConsult = msg.id == viewModel.messages.last?.id
+                                    && msg.role == .assistant
+                                    && !msg.isStreaming
+                                    && !(msg.model?.contains("cloud") ?? false)
+                                MessageBubble(message: msg, projectDir: projectDir,
+                                              onConsult: canConsult ? { consult() } : nil)
+                                    .equatable()
+                                    .id(msg.id)
+                            }
                         }
                         // "View Report" row — appears below last message after research completes
                         if let reportPath = viewModel.researchReportPath, !viewModel.isResearching {
@@ -520,6 +581,66 @@ struct ChatView: View {
         .padding(.bottom, 4)
     }
 
+    /// Compact label for the switcher: the chat's effective model, tag prefix trimmed
+    /// to keep the toolbar tidy ("gemma4:26b" → "26b"; cloud kept readable).
+    private var modelSwitcherLabel: String {
+        guard let m = effectiveModel else { return "Auto" }
+        if let after = m.split(separator: ":").last, !after.isEmpty { return String(after) }
+        return m
+    }
+
+    private var modelSwitcher: some View {
+        Menu {
+            // Clear → follow the global default. Shows what that currently resolves to.
+            let g = selectedModel.isEmpty ? "Auto" : selectedModel
+            Button { selectChatModel(nil) } label: {
+                if chatModelOverride == nil {
+                    Label("Global default (\(g))", systemImage: "checkmark")
+                } else {
+                    Text("Global default (\(g))")
+                }
+            }
+            if !catalog.models.isEmpty {
+                Divider()
+                ForEach(catalog.models) { model in
+                    let title = model.name
+                        + (model.recommended ? " ★" : "")
+                        + (model.isCloud ? " ☁" : "")
+                    Button { selectChatModel(model.name) } label: {
+                        if chatModelOverride == model.name {
+                            Label(title, systemImage: "checkmark")
+                        } else {
+                            Text(title)
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: chatModelOverride != nil ? "cpu.fill" : "cpu")
+                    .font(.system(size: 11))
+                Text(modelSwitcherLabel)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .foregroundStyle(chatModelOverride != nil ? Color.accentColor : Color.secondary.opacity(0.8))
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(chatModelOverride != nil ? Color.accentColor.opacity(0.1) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(viewModel.isStreaming)
+        .help("Model for this chat. Overrides the global default here only.")
+    }
+
     private var inputBottomBar: some View {
         HStack(alignment: .center, spacing: 2) {
             if inputFocused {
@@ -530,6 +651,10 @@ struct ChatView: View {
                 FormatButton(icon: "list.bullet", help: "List item") { inputController.wrap(prefix: "\n- ", suffix: "") }
             }
             Spacer()
+            // Per-chat model switcher — quick-access; sets this chat's override (not the
+            // global default). The Cheshire "Model" side panel sets the global default.
+            modelSwitcher
+                .padding(.trailing, 2)
             // Deep Research toggle — right of formatting buttons, left of send
             Button {
                 viewModel.researchMode.toggle()
@@ -597,6 +722,29 @@ struct ChatView: View {
         .padding(.vertical, 8)
     }
 
+}
+
+/// Centered, low-key inline banner for `.system` notices (e.g. model-no-longer-installed).
+/// Not a chat bubble — no avatar, no actions.
+struct SystemNoticeRow: View {
+    let text: String
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 0)
+            Text(text)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule().fill(Color.primary.opacity(0.06))
+                )
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity)
+    }
 }
 
 struct FormatButton: View {

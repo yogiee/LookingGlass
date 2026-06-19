@@ -14,6 +14,9 @@ struct Message: Identifiable, Equatable {
     enum Role: String, Codable {
         case user
         case assistant
+        /// UI-only notice persisted in history (e.g. "model no longer installed → switched
+        /// to default"). Never sent to the model — filtered out of the request history.
+        case system
     }
 
     init(id: UUID = UUID(), role: Role, content: String, isStreaming: Bool = false, toolCalls: [ToolCall] = [], model: String? = nil) {

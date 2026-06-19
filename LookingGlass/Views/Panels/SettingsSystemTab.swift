@@ -110,8 +110,11 @@ struct SettingsSystemTab: View {
         Section("Ollama") {
             VStack(alignment: .leading, spacing: 6) {
                 Text("API URL")
-                    .font(.system(size: 12, weight: .medium))
-                FocusedTextField("http://localhost:11434", text: $ollamaHost,
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                FocusedTextField("http://host:port", text: $ollamaHost,
                                  font: .system(size: 12, design: .monospaced))
                 Text("Point at a remote machine on your network to offload inference.")
                     .font(.system(size: 10))

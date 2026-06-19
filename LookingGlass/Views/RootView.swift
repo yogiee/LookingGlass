@@ -73,17 +73,13 @@ struct RootView: View {
     @AppStorage("colorSchemeRaw")   private var colorSchemeRaw   = AppColorScheme.system.rawValue
     @AppStorage("fontSize")         private var fontSize         = 14.0
     @AppStorage("lineHeight")       private var lineHeight       = 1.2
-    @AppStorage("backgroundStyle")  private var backgroundStyleRaw = BackgroundStyle.glass.rawValue
     @AppStorage("ollamaHost")       private var ollamaHost       = "http://localhost:11434"
     @State private var sidebarVisible = true
 
     @StateObject private var systemMonitor = SystemMonitor()
     @StateObject private var toolCallStore = ToolCallStore()
     @StateObject private var reportPanel = ReportPanelState()
-
-    private var backgroundStyle: BackgroundStyle {
-        BackgroundStyle(rawValue: backgroundStyleRaw) ?? .glass
-    }
+    @StateObject private var modelCatalog = ModelCatalog()
 
     private var railTab: RailTab {
         RailTab(rawValue: railSelectionRaw) ?? .chats
@@ -97,28 +93,11 @@ struct RootView: View {
         preferredColorScheme ?? systemColorScheme
     }
 
-    // Wonderland backdrop fills the window. Glass mode darkens the desktop for readability.
+    // Glass is the only background: frosted desktop blur + a dark tint for readability.
     @ViewBuilder
     private var backgroundLayer: some View {
-        if backgroundStyle == .wonderland || backgroundStyle == .wonderlandWalk {
-            let name: String = {
-                let walk = backgroundStyle == .wonderlandWalk
-                return activeColorScheme == .dark
-                    ? (walk ? "bg-dark-walk" : "bg-dark")
-                    : (walk ? "bg-light-walk" : "bg-light")
-            }()
-            GeometryReader { geo in
-                Asset.image(name)
-                    .scaledToFill()
-                    .frame(width: geo.size.width, height: geo.size.height, alignment: .bottom)
-                    .clipped()
-            }
-            .opacity(0.9)
-        } else {
-            // Glass mode: frosted desktop blur + dark tint for readability.
-            VibrancyBackground(colorScheme: preferredColorScheme)
-            Color.black.opacity(activeColorScheme == .dark ? 0.35 : 0.08)
-        }
+        VibrancyBackground(colorScheme: preferredColorScheme)
+        Color.black.opacity(activeColorScheme == .dark ? 0.35 : 0.08)
     }
 
     var body: some View {
@@ -138,6 +117,7 @@ struct RootView: View {
                 SidebarView(tab: railTab)
                     .environmentObject(systemMonitor)
                     .environmentObject(toolCallStore)
+                    .environmentObject(modelCatalog)
                     .frame(width: 380)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                     // Hairline border so the panel reads against the frosted backdrop
@@ -152,6 +132,7 @@ struct RootView: View {
 
             ChatView()
                 .environmentObject(toolCallStore)
+                .environmentObject(modelCatalog)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .blur(radius: reportPanel.isVisible ? 6 : 0, opaque: false)
@@ -184,6 +165,16 @@ struct RootView: View {
             sidecar.start()
             systemMonitor.ollamaHost = ollamaHost
             systemMonitor.start()
+            // Guard A: refresh the model registry on every launch so newly pulled /
+            // removed models are reflected without manual action.
+            await modelCatalog.refresh(ollamaHost: ollamaHost)
+        }
+        // Re-fetch once the sidecar reports healthy (covers the launch race where the
+        // first refresh runs before the sidecar is up).
+        .onChange(of: sidecar.status) { _, newStatus in
+            if newStatus == .running {
+                Task { await modelCatalog.refresh(ollamaHost: ollamaHost) }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in
             railSelectionRaw = RailTab.settings.rawValue

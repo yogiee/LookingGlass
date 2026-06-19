@@ -6,7 +6,6 @@ struct SettingsStyleTab: View {
     @AppStorage("chatFontChoice") private var chatFontChoice = ChatFontChoice.system.rawValue
     @AppStorage("fontSize") private var fontSize = 14.0
     @AppStorage("lineHeight") private var lineHeight = 1.2
-    @AppStorage("backgroundStyle") private var backgroundStyle = BackgroundStyle.glass.rawValue
     @AppStorage("userName") private var userName = ""
     @AppStorage("userAvatarVersion") private var userAvatarVersion = 0
 
@@ -26,13 +25,6 @@ struct SettingsStyleTab: View {
             Picker("Color Mode", selection: $colorSchemeRaw) {
                 ForEach(AppColorScheme.allCases, id: \.rawValue) { scheme in
                     Text(scheme.rawValue).tag(scheme.rawValue)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            Picker("Background", selection: $backgroundStyle) {
-                ForEach(BackgroundStyle.allCases, id: \.rawValue) { style in
-                    Text(style.label).tag(style.rawValue)
                 }
             }
             .pickerStyle(.segmented)
@@ -78,7 +70,10 @@ struct SettingsStyleTab: View {
         Section("Profile") {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Name")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
                 FocusedTextField("Your name", text: $userName)
                 Text("Alice uses your name in conversation.")
                     .font(.system(size: 10))
@@ -89,7 +84,10 @@ struct SettingsStyleTab: View {
                 avatarPreview
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Avatar")
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+                        .tracking(0.5)
                     Text("Shown next to your messages")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)

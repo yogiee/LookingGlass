@@ -1,0 +1,83 @@
+# LookingGlass — model registry (our OPINION of known chat models).
+#
+# Thin + hand-maintained. NOT a mirror of BenchLLAMA, and NOT the source of truth for
+# what's installed (that's live from Ollama /api/tags) or what's chat-capable (live from
+# /api/show capabilities). This file is opinion only: role, quality tier, measured speed,
+# whether we recommend it, and a one-line note. Edited when we make a model decision —
+# same cadence as config.toml + memory.
+#
+# Reference machine for `tokps`/`ram_gb`: M1 Max, 32GB.
+# Speed bands (feedback_speed_thresholds): >40 comfortable · >20 workable · <20 slow.
+# Deeper human reference: WORKSPACE/model-rankings.md.
+#
+# Schema per entry (all optional except presence):
+#   role        chat-default | chat-fallback | specialist | research | vision | router | tool
+#   tier        flagship | standard | lite
+#   tokps       measured tokens/sec on the reference machine
+#   ram_gb      resident RAM during active use
+#   location    local | cloud
+#   recommended true highlights the model in the picker
+#   note        one-line rationale shown as a subtitle
+
+[models."gemma4:26b"]
+role = "chat-default"
+tier = "flagship"
+tokps = 48
+ram_gb = 17
+location = "local"
+recommended = true
+note = "Default. Honest, full Alice voice, num_ctx-leashed (GGUF)."
+
+[models."gemma4:12b"]
+role = "chat-fallback"
+tier = "standard"
+tokps = 24
+ram_gb = 7.6
+location = "local"
+recommended = false
+note = "Lean fallback + tool worker. Lower RAM, still in-voice."
+
+[models."gemma4:latest"]
+role = "tool"
+tier = "lite"
+location = "local"
+recommended = false
+note = "Functional fallback for tool/MCP tasks."
+
+[models."qwen3.5:4b-mlx"]
+role = "chat-fallback"
+tier = "lite"
+tokps = 64
+ram_gb = 3.5
+location = "local"
+recommended = false
+note = "Speed pick. Fast + tiny; world-knowledge confabulation risk in casual chat."
+
+[models."qwen2.5vl:3b"]
+role = "vision"
+tier = "lite"
+location = "local"
+recommended = false
+note = "Image-description tool model. Chat-capable but not its job."
+
+[models."llama3.2:3b"]
+role = "router"
+tier = "lite"
+tokps = 177
+location = "local"
+recommended = false
+note = "Fast classifier (router candidate). Not for chat."
+
+[models."gemma4:31b-cloud"]
+role = "specialist"
+tier = "flagship"
+location = "cloud"
+recommended = false
+note = "Consult-the-big-model target. Best voice; runs off-machine."
+
+[models."gpt-oss:120b-cloud"]
+role = "research"
+tier = "flagship"
+location = "cloud"
+recommended = false
+note = "Deep-research target. Max free-tier reasoning depth; mechanical voice."

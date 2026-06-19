@@ -17,9 +17,21 @@ struct FocusedTextField: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        TextField(placeholder, text: $text)
-            .textFieldStyle(.plain)
-            .font(font)
+        // Placeholder is rendered as a ghost overlay (not the TextField's title) so a
+        // grouped Form can't extract it as a row label and right-align the value. The
+        // empty-title TextField + ZStack keeps the value left-aligned everywhere.
+        ZStack(alignment: .leading) {
+            if text.isEmpty, !placeholder.isEmpty {
+                Text(placeholder)
+                    .font(font)
+                    .foregroundStyle(.tertiary)
+                    .allowsHitTesting(false)
+            }
+            TextField("", text: $text)
+                .textFieldStyle(.plain)
+                .labelsHidden()
+                .font(font)
+        }
             .padding(.vertical, 7)
             .padding(.horizontal, 10)
             .background(.regularMaterial, in: .rect(cornerRadius: 8, style: .continuous))

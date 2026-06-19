@@ -168,17 +168,18 @@ class SidecarClient {
         return (json["status"] as? String) == "ok"
     }
 
-    func fetchModels(ollamaHost: String? = nil) async -> [String] {
+    /// Enriched model list: live (installed ∩ chat-capable) joined with the sidecar's
+    /// opinion registry. See `ModelInfo`. Empty on any failure (caller treats as offline).
+    func fetchModels(ollamaHost: String? = nil) async -> [ModelInfo] {
         var comps = URLComponents(url: baseURL.appending(path: "/models"), resolvingAgainstBaseURL: false)
         if let ollamaHost {
             comps?.queryItems = [URLQueryItem(name: "ollama_host", value: ollamaHost)]
         }
         guard let url = comps?.url,
               let (data, _) = try? await URLSession.shared.data(from: url),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let models = json["models"] as? [String]
+              let decoded = try? JSONDecoder().decode(ModelsResponse.self, from: data)
         else { return [] }
-        return models
+        return decoded.models
     }
 
     /// Deterministic per-message memory save (the "Save to memory" button).
