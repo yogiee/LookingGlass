@@ -6,6 +6,27 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.8</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.8 — UI polish, a new launch screen, and a refreshed icon</h3>
+        <ul>
+          <li>New launch screen: full-body Alice greets you with a Wonderland speech bubble — tap it for another quip.</li>
+          <li>Refreshed app icon — a glossier, more refined looking-glass.</li>
+          <li>New Wonderland avatars, roomier chat bubbles, a cleaner glass background, and tidier Settings labels.</li>
+          <li>In-app model registry plus a per-chat model switcher right in the message bar — change the model for one chat without touching your global default.</li>
+        </ul>
+      ]]></description>
+      <pubDate>Sat, 20 Jun 2026 06:02:30 +0530</pubDate>
+      <sparkle:version>19</sparkle:version>
+      <sparkle:shortVersionString>0.8.8</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.8/LookingGlass.dmg"
+        sparkle:edSignature="+ESfYuorzg8P0OBe9W5qBgTEgNw8HSvvqpWfBgmV501DTJkhm5dqyFKSHzcCrCHIq2pZe0GYbCHsWSoy6DnCCg=="
+        length="49798211"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.7</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.7 — smarter, faster default (gemma4:26b)</h3>
