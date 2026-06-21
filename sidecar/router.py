@@ -27,6 +27,21 @@ _CODING = re.compile(
     re.IGNORECASE,
 )
 
+# Tool-need detection (small-specialist fleet, 2026-06-21). The chat default (ZINI) is
+# completion-only — it can't call tools. So a turn that clearly needs a live fact or a
+# file/web action must route to the tool-capable lane instead of fabricating on ZINI.
+# Maps to "coding" (= the tools lane, gemma4:12b-mlx in the fleet; gemma4:12b in the
+# stable lock — both tool-capable, so this is benign under either config). Coarse by
+# design: turns that dodge these keywords and still need a tool can leak to ZINI — the
+# known structural cost of a tool-less chat default (full fix = Option B silent-hands).
+_TOOL_NEED = re.compile(
+    r"\b(search|look.?up|google|web|browse|fetch|download|url|https?|"
+    r"current(?:ly)?|latest|today|tonight|right.now|recent|news|headline|"
+    r"weather|forecast|temperature|price|cost|stock|score|exchange.rate|"
+    r"who.won|when.(?:is|does|did)|read.the.file|write.(?:a|the).file|save.to|list.files)\b",
+    re.IGNORECASE,
+)
+
 
 def classify_mode(messages: list[dict]) -> str:
     """Return the routing mode for this conversation turn."""
@@ -42,5 +57,8 @@ def classify_mode(messages: list[dict]) -> str:
     if _RESEARCH.search(text):
         return "research"
     if _CODING.search(text):
+        return "coding"
+    # Tool-need → the tools lane, so a tool-less chat default doesn't get the turn.
+    if _TOOL_NEED.search(text):
         return "coding"
     return "default"

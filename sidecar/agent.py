@@ -29,6 +29,28 @@ from tools.context import (
 from tools.registry import ToolRegistry
 
 
+# Per-model tool-capability cache. Completion-only models (e.g. the fleet's ZINI chat
+# default) return HTTP 400 "does not support tools" if a `tools` array is attached, so we
+# must probe before sending. Ollama advertises this via /api/show `capabilities`.
+_TOOL_CAP_CACHE: dict[str, bool] = {}
+
+
+async def _model_supports_tools(client: httpx.AsyncClient, host: str, model: str) -> bool:
+    """Whether `model` advertises the 'tools' capability. Cached per model.
+    Fail-OPEN to True on a probe error — only a model that EXPLICITLY lacks 'tools' gets
+    them stripped, so a transient /api/show hiccup never silently de-tools a capable model."""
+    if model in _TOOL_CAP_CACHE:
+        return _TOOL_CAP_CACHE[model]
+    try:
+        r = await client.post(f"{host}/api/show", json={"model": model}, timeout=5.0)
+        caps = r.json().get("capabilities") or []
+        ok = ("tools" in caps) if caps else True
+    except Exception:
+        ok = True
+    _TOOL_CAP_CACHE[model] = ok
+    return ok
+
+
 @dataclass
 class AgentConfig:
     ollama_host: str
@@ -88,9 +110,13 @@ async def chat_stream(
     # cloud research model). Outside research mode, an explicit pick wins; otherwise
     # the keyword classifier routes.
     if research_mode:
+        # The research button = LARGE deep research. Prefer the dedicated `deep_research`
+        # lane (fleet: gpt-oss:120b-cloud); fall back to `research` for configs that don't
+        # split medium/deep (the stable lock has only `research`).
         mode = "research"
         resolved_model = (
-            project_model_for_mode(project_cfg, config.models, "research")
+            project_model_for_mode(project_cfg, config.models, "deep_research")
+            or project_model_for_mode(project_cfg, config.models, "research")
             or config.default_model
         )
     elif specialist_mode:
@@ -205,6 +231,11 @@ async def chat_stream(
 
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
+            # Only attach tools if the resolved model can actually use them — a
+            # completion-only model (e.g. ZINI) 400s on a `tools` payload.
+            attach_tools = bool(tool_schemas) and await _model_supports_tools(
+                client, host, resolved_model
+            )
             for turn in range(config.max_turns):
                 payload = {
                     "model": resolved_model,
@@ -218,7 +249,7 @@ async def chat_stream(
                     # huge KV cache that bloats RAM and chokes big models on 32GB.
                     "options": {"num_ctx": config.num_ctx},
                 }
-                if tool_schemas:
+                if attach_tools:
                     payload["tools"] = tool_schemas
 
                 assistant_content = ""

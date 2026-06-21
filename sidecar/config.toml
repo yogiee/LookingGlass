@@ -46,15 +46,36 @@ keep_alive = "5m"
 # Router model (llama3.2:3b, 10/10 classify, 177 tok/s) — not yet wired into sidecar.
 # Currently routing is keyword-based (router.py). Neural router is a future improvement.
 # specialist — the per-turn "Consult the big model" escalation target (Phase 1a). Unlike
-#            `research` (depth-first artifact → gpt-oss), this is the IN-VOICE escalation:
+#            `deep_research` (depth-first artifact → gpt-oss), this is the IN-VOICE escalation:
 #            gemma4:31b-cloud holds Alice's voice, so escalate-the-turn yields depth + voice
 #            with no framing. Invoked only by an explicit user tap (consent). See
 #            design_alice_hybrid_butler_specialists.
+#
+# ── SMALL-SPECIALIST FLEET prototype (2026-06-21) ────────────────────────────────────
+# Trying the multi-small-model theory (strategy_small_specialist_mlx_fleet,
+# design_consumer_scope_fit_testing). 3 voice/work lanes co-resident on 32GB (~16GB), no
+# swap on the everyday loop; deep research = cloud. Lite-bench validated: ZINI voice 3/3,
+# 12b-mlx confab 4/4. GOTCHA: ZINI is completion-only (no tools) → router.py now detects
+# tool-need and routes those turns to 12b-mlx; turns that dodge the detector + need a tool
+# can still fabricate on ZINI (the structural cost of a tool-less chat default — full fix
+# = Option B silent-hands, deferred).
+#   default       = ZINI                small chat (voice; no tools)
+#   coding        = gemma4:12b-mlx      tools + code (confab-clean 4/4, has tools)
+#   research      = gemma4:12b-mlx      medium research (keyword-auto)
+#   deep_research = gpt-oss:120b-cloud  large deep research (research button; max depth)
+#   specialist    = gemma4:31b-cloud    consult-the-big-model (in-voice escalation)
+#
+# ── STABLE LOCK (restore these 4 lines + delete the fleet block to revert) ────────────
+#   default    = "gemma4:26b"
+#   coding     = "gemma4:12b"
+#   research   = "gpt-oss:120b-cloud"
+#   specialist = "gemma4:31b-cloud"
 [models]
-default    = "gemma4:26b"
-coding     = "gemma4:12b"
-research   = "gpt-oss:120b-cloud"
-specialist = "gemma4:31b-cloud"
+default       = "s80982708/ZINI-LOCAL:latest"
+coding        = "gemma4:12b-mlx"
+research      = "gemma4:12b-mlx"
+deep_research = "gpt-oss:120b-cloud"
+specialist    = "gemma4:31b-cloud"
 
 [server]
 port = 8765
