@@ -1,14 +1,14 @@
 from pathlib import Path
 
 from ..base import Tool, ok, err
-from ..context import working_dir
+from ..context import working_dir, output_subdir
 
 MAX_READ_BYTES = 256_000
 
 
 def _resolve(path: str) -> Path:
     """Absolute paths and ~ are honored as-is; relative paths resolve against the
-    request's working dir (the project folder, or ~/LookingGlass/Inbox), falling
+    request's working dir (the project folder, or the user's files root), falling
     back to home outside a chat request."""
     p = Path(path).expanduser()
     if p.is_absolute():
@@ -17,11 +17,32 @@ def _resolve(path: str) -> Path:
     return (base / p).resolve()
 
 
+def _resolve_write(path: str) -> Path:
+    """Like _resolve, but a bare filename (no directory component) lands in the
+    `documents/` type folder so written text/markdown stays organized. Paths that
+    include a directory, or absolute/~ paths, are honored exactly as given."""
+    p = Path(path).expanduser()
+    if not p.is_absolute() and p.parent == Path("."):
+        return (output_subdir("documents") / p.name).resolve()
+    return _resolve(path)
+
+
+def _resolve_read(path: str) -> Path:
+    """Resolve for reading: try the working dir first, then fall back to the
+    `documents/` folder so a file written by its bare name is still found."""
+    p = _resolve(path)
+    if not p.exists() and not Path(path).expanduser().is_absolute():
+        alt = (output_subdir("documents") / Path(path).name).resolve()
+        if alt.exists():
+            return alt
+    return p
+
+
 async def _file_read(args: dict) -> dict:
     path = args.get("path")
     if not path:
         return err("Missing required argument: path")
-    p = _resolve(path)
+    p = _resolve_read(path)
     if not p.exists():
         return err(f"File not found: {p}")
     if not p.is_file():
@@ -42,7 +63,7 @@ async def _file_write(args: dict) -> dict:
     append = bool(args.get("append", False))
     if not path:
         return err("Missing required argument: path")
-    p = _resolve(path)
+    p = _resolve_write(path)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         mode = "a" if append else "w"
@@ -69,7 +90,7 @@ async def _apply_patch(args: dict) -> dict:
     if not path or old is None:
         return err("Missing required arguments: path and old_string")
 
-    p = _resolve(path)
+    p = _resolve_read(path)
     if not p.exists():
         return err(f"File not found: {p}")
     try:
@@ -111,7 +132,7 @@ TOOLS = [
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path to write to — relative paths land in the current project folder (or ~/LookingGlass/Inbox for non-project chats)"},
+                "path": {"type": "string", "description": "Path to write to. A bare filename (e.g. 'notes.md') lands in the documents folder automatically; include a subfolder or pass an absolute/~ path to control the location exactly."},
                 "content": {"type": "string", "description": "Text content to write"},
                 "append": {"type": "boolean", "description": "Append instead of overwrite"},
             },

@@ -65,6 +65,16 @@ keep_alive = "5m"
 #   research      = gemma4:12b-mlx      medium research (keyword-auto)
 #   deep_research = gpt-oss:120b-cloud  large deep research (research button; max depth)
 #   specialist    = gemma4:31b-cloud    consult-the-big-model (in-voice escalation)
+#   hands         = llama3.2:3b         SILENT-HANDS tool-caller for the tool-less voice
+#                                       default. When `default` can't call tools (ZINI), a
+#                                       small tool-capable model runs the agent loop and the
+#                                       voice model plates the result (butler: plates, not
+#                                       re-cooks). hands needs ONLY tool-calling competence,
+#                                       not voice/depth — so it's small + fast. Choice is the
+#                                       open BenchLLAMA question (candidate_zini_tool_caller_
+#                                       companions): llama3.2:3b (router-proven, 177 t/s) vs
+#                                       granite4.1:3b (agentic-tuned) vs gemma4:12b-mlx. Swap
+#                                       here. Falls back to `coding` if unset.
 #
 # ── STABLE LOCK (restore these 4 lines + delete the fleet block to revert) ────────────
 #   default    = "gemma4:26b"
@@ -77,6 +87,7 @@ coding        = "gemma4:12b-mlx"
 research      = "gemma4:12b-mlx"
 deep_research = "gpt-oss:120b-cloud"
 specialist    = "gemma4:31b-cloud"
+hands         = "granite4.1:3b"
 
 [server]
 port = 8765

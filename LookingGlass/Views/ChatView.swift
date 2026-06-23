@@ -117,6 +117,10 @@ class ChatViewModel: ObservableObject {
         // Where this conversation lives — sent so the sidecar scopes tools and
         // reads project.toml/guidelines.md. nil for independent chats.
         let projectDir = store.projectFolderPath(forConversation: conversationID)
+        // User's configured save root for independent chats (Settings → System).
+        // Empty → sidecar uses its ~/Documents/LookingGlass default. Ignored when
+        // in a project (the project folder wins).
+        let filesRoot = UserDefaults.standard.string(forKey: "filesRoot")
 
         streamTask = Task {
             defer {
@@ -141,6 +145,7 @@ class ChatViewModel: ObservableObject {
                     enabledTools: enabledTools,
                     systemPrompt: systemPrompt,
                     projectDir: projectDir,
+                    filesRoot: filesRoot,
                     userName: userName,
                     mcpHintsEnabled: mcpHintsEnabled,
                     researchMode: researchMode,

@@ -17,7 +17,14 @@ from tools.context import reset_project_dir, set_project_dir
 from tools.registry import ToolRegistry
 
 BASE_DIR = Path(__file__).parent
-MCP_USER_FILE = BASE_DIR / "mcp_user_servers.json"
+
+# User-added MCP servers are USER DATA, not app code — they must live outside the
+# bundle so an app update/reinstall (which replaces Contents/Resources/sidecar)
+# doesn't wipe them. Co-located with history.db + the custom avatar in Application
+# Support. The legacy in-bundle file is migrated once on first load.
+APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "LookingGlass"
+MCP_USER_FILE = APP_SUPPORT_DIR / "mcp_user_servers.json"
+_LEGACY_MCP_USER_FILE = BASE_DIR / "mcp_user_servers.json"
 
 
 def load_config() -> dict:
@@ -41,6 +48,17 @@ def load_model_registry() -> dict:
 
 
 def load_user_mcp_servers() -> list[dict]:
+    # One-time migration: an older build stored this inside the bundle. If the
+    # Application Support copy doesn't exist yet but the legacy one does, adopt it.
+    if not MCP_USER_FILE.is_file() and _LEGACY_MCP_USER_FILE.is_file():
+        try:
+            APP_SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+            MCP_USER_FILE.write_text(
+                _LEGACY_MCP_USER_FILE.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+            print(f"[sidecar] migrated MCP servers → {MCP_USER_FILE}")
+        except Exception as e:
+            print(f"[sidecar] MCP migration failed: {e}")
     if not MCP_USER_FILE.is_file():
         return []
     try:
@@ -50,6 +68,7 @@ def load_user_mcp_servers() -> list[dict]:
 
 
 def save_user_mcp_servers(servers: list[dict]) -> None:
+    APP_SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
     MCP_USER_FILE.write_text(json.dumps(servers, indent=2), encoding="utf-8")
 
 
@@ -121,6 +140,7 @@ class ChatRequest(BaseModel):
     system_prompt: str | None = None
     project_dir: str | None = None          # absolute project folder, or None for independent chats
     working_dir: str | None = None          # tool output scope; sidecar derives it when absent
+    files_root: str | None = None           # user's configured save root for independent chats; sidecar defaults to ~/Documents/LookingGlass
     user_name: str | None = None            # prepended to system prompt as "The user's name is X."
     mcp_hints_enabled: dict[str, bool] | None = None  # per-server MCP prompt injection toggle
     research_mode: bool = False               # forces deep-research skill + research model
@@ -213,7 +233,7 @@ async def tools():
 
 @app.get("/skills")
 async def list_skills():
-    from skill_loader import all_skills
+    from skill_loader import all_skills, is_builtin
     skills = all_skills()
     return {"skills": [
         {
@@ -221,6 +241,8 @@ async def list_skills():
             "description": s.description,
             "when_to_use": s.when_to_use,
             "folder": s.path.parent.name,
+            # Built-ins (shipped in the bundle) are read-only — the UI can hide delete.
+            "is_builtin": is_builtin(s.path.parent.name),
         }
         for s in skills
     ]}
@@ -233,9 +255,11 @@ class SkillImportRequest(BaseModel):
 
 @app.post("/skills/import")
 async def import_skill(req: SkillImportRequest):
-    from skill_loader import SKILLS_DIR
+    # User-added/imported skills go to Application Support, never the bundle, so an
+    # app update doesn't wipe them. Shipped skills stay read-only in-bundle.
+    from skill_loader import USER_SKILLS_DIR
     safe_name = req.name.strip().replace("/", "_").replace("..", "_") or "unnamed"
-    skill_dir = SKILLS_DIR / safe_name
+    skill_dir = USER_SKILLS_DIR / safe_name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(req.content, encoding="utf-8")
     return {"success": True, "name": safe_name}
@@ -243,9 +267,12 @@ async def import_skill(req: SkillImportRequest):
 
 @app.delete("/skills/{folder_name}")
 async def delete_skill(folder_name: str):
-    from skill_loader import SKILLS_DIR
-    skill_dir = SKILLS_DIR / folder_name
+    from skill_loader import USER_SKILLS_DIR, SHIPPED_SKILLS_DIR
+    skill_dir = USER_SKILLS_DIR / folder_name
     if not skill_dir.is_dir():
+        # Built-ins ship in the bundle and are intentionally not user-deletable.
+        if (SHIPPED_SKILLS_DIR / folder_name).is_dir():
+            raise HTTPException(status_code=400, detail="Built-in skills can't be deleted.")
         raise HTTPException(status_code=404, detail="Skill not found")
     shutil.rmtree(skill_dir)
     return {"success": True}
@@ -351,6 +378,7 @@ async def chat(request: ChatRequest):
                 system_prompt=request.system_prompt,
                 project_dir=request.project_dir,
                 working_dir=request.working_dir,
+                files_root=request.files_root,
                 user_name=request.user_name,
                 mcp_hints_enabled=request.mcp_hints_enabled,
                 research_mode=request.research_mode,

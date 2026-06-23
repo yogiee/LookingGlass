@@ -42,19 +42,46 @@ struct SystemMonitorPanel: View {
 
     private var ollamaCard: some View {
         let vramFill = monitor.ramTotalGB > 0 ? monitor.ollamaVRAMGB / monitor.ramTotalGB : 0
+        let models = monitor.ollamaModels
         let valueText: String = {
             if monitor.ollamaStatus == "Offline" { return "Offline" }
             if monitor.ollamaVRAMGB > 0 { return String(format: "%.1f GB VRAM", monitor.ollamaVRAMGB) }
             return monitor.ollamaStatus
         }()
+        // One model → show its name (as before). Multiple → "N models running",
+        // with the per-model breakdown listed below the bar.
+        let subtitleText: String? = {
+            if models.count > 1 { return "\(models.count) models running" }
+            return monitor.ollamaModel
+        }()
         return MonitorCard(
             icon: "ollama-logo",
             isCustomIcon: true,
             label: "Ollama",
-            subtitle: monitor.ollamaModel,
+            subtitle: subtitleText,
             value: valueText,
             fill: vramFill
-        )
+        ) {
+            if models.count > 1 {
+                VStack(spacing: 4) {
+                    ForEach(models) { m in
+                        HStack(spacing: 8) {
+                            Text(m.name)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 8)
+                            Text(String(format: "%.1f GB", m.vramGB))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
     }
 }
 
@@ -98,13 +125,27 @@ struct DotMatrixBar: View {
 
 // MARK: - Monitor Card
 
-struct MonitorCard: View {
+struct MonitorCard<Footer: View>: View {
     let icon: String
     var isCustomIcon: Bool = false
     let label: String
     var subtitle: String?
     let value: String
     let fill: Double
+    /// Optional extra rows rendered below the dot-matrix bar (e.g. the Ollama
+    /// card's per-model RAM breakdown). Defaults to nothing for the other cards.
+    let footer: () -> Footer
+
+    init(icon: String, isCustomIcon: Bool = false, label: String, subtitle: String? = nil,
+         value: String, fill: Double, @ViewBuilder footer: @escaping () -> Footer) {
+        self.icon = icon
+        self.isCustomIcon = isCustomIcon
+        self.label = label
+        self.subtitle = subtitle
+        self.value = value
+        self.fill = fill
+        self.footer = footer
+    }
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -150,6 +191,7 @@ struct MonitorCard: View {
                     .lineLimit(1)
             }
             DotMatrixBar(fill: fill, color: barColor)
+            footer()
         }
         .padding(12)
         .background(cardBackground)
@@ -170,5 +212,15 @@ struct MonitorCard: View {
                 Color.black.opacity(0.05)
             }
         }
+    }
+}
+
+// Footer-less convenience init for the cards that don't need a breakdown
+// (CPU/GPU/RAM) — lets them omit the trailing closure and infer Footer == EmptyView.
+extension MonitorCard where Footer == EmptyView {
+    init(icon: String, isCustomIcon: Bool = false, label: String, subtitle: String? = nil,
+         value: String, fill: Double) {
+        self.init(icon: icon, isCustomIcon: isCustomIcon, label: label, subtitle: subtitle,
+                  value: value, fill: fill, footer: { EmptyView() })
     }
 }

@@ -138,6 +138,16 @@ class ToolRegistry:
         self._mcp_connections.clear()
 
 
+# MCP tools that return errors as plain text (no isError flag) overwhelmingly use a
+# leading "Error" by convention. Match only that narrow prefix so a legitimate result
+# that merely mentions "error" mid-text is never misflagged.
+_TOOL_ERROR_PREFIXES = ("error:", "error from ", "error generating", "error loading")
+
+
+def _looks_like_tool_error(text: str) -> bool:
+    return text.lstrip().lower().startswith(_TOOL_ERROR_PREFIXES)
+
+
 def _wrap_mcp_tool(conn, mcp_tool, server_name: str = "") -> Tool:
     """Wrap one MCP tool as a sidecar Tool with a proxying async handler.
 
@@ -153,7 +163,18 @@ def _wrap_mcp_tool(conn, mcp_tool, server_name: str = "") -> Tool:
             text = "\n".join(
                 c.text for c in result.content if hasattr(c, "text") and c.text
             )
-            return ok(text) if text else err("MCP tool returned no text content.")
+            if not text:
+                return err("MCP tool returned no text content.")
+            # Surface real failures as failures. Two cases the agent loop must not
+            # mistake for success (otherwise the model relays the raw error as if it
+            # were a result, or fabricates around it — see agent.py's [TOOL ERROR] mark):
+            #   1. MCP-native: the server set isError on the CallToolResult.
+            #   2. String-convention: many MCP tools (e.g. OllamaMCP's local_image)
+            #      return an error as ordinary text — "Error: …" / "Error from …".
+            #      Detect that narrow, conventional prefix so it's marked, not parroted.
+            if getattr(result, "isError", False) or _looks_like_tool_error(text):
+                return err(text)
+            return ok(text)
         except Exception as exc:
             return err(f"{type(exc).__name__}: {exc}")
 

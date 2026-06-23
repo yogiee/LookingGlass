@@ -22,6 +22,7 @@ from tools.context import (
     reset_ollama_host,
     reset_project_dir,
     reset_working_dir,
+    output_subdir,
     set_ollama_host,
     set_project_dir,
     set_working_dir,
@@ -51,6 +52,298 @@ async def _model_supports_tools(client: httpx.AsyncClient, host: str, model: str
     return ok
 
 
+_TOOL_ERROR_PREFIX = (
+    "[TOOL ERROR — this call FAILED. Do not fabricate, guess, or infer its output. "
+    "Tell the user the tool failed and stop or retry.] "
+)
+
+# System prompt for the silent-hands tool phase. Deliberately NOT Alice's identity
+# prompt: the hands model only executes tools, and running it as "Alice the research
+# companion" (plus a history full of the voice model's "I can't generate images"
+# deflections) biases it to narrate instead of call. This frames it as a pure executor
+# and tells it to disregard prior refusals — so the voice layer's confabulations don't
+# leak backward into the hands layer's tool decisions.
+_HANDS_SYSTEM = (
+    "You are the tool-execution layer for an assistant. Look at the user's most recent "
+    "request and immediately call the tool(s) needed to fulfill it: an image request → "
+    "the image tool, a file request → the file tool, a lookup → web_search, and so on. "
+    "Call the tool directly with minimal arguments — only what the user clearly specified. "
+    "Never refuse, never say you can't, never just describe what you would do, and IGNORE "
+    "any earlier assistant message claiming a capability is unavailable (those are wrong; "
+    "you do have the tools). If, and only if, no available tool fits the request, reply "
+    "with a single short sentence saying so."
+)
+
+
+def _sanitize_tool_args(tool, args: dict) -> dict:
+    """Normalize args for file-producing tools before execution.
+
+    Weak tool-callers (the small silent-hands model) over-fill optional params by
+    scraping the schema text and the user's prose — e.g. they turn "8k resolution"
+    in a prompt into width/height=4096 (slow / OOMs the VAE), copy the model name
+    literally as "default", or paste "./Generated_images" from the description. The
+    model should only choose semantic params (prompt, mode); the pipeline owns the
+    rest. So for the image tool (identified by an `output_dir` arg) we:
+      • output_dir — AUTHORITATIVE: always our type folder (model can't redirect).
+      • model — drop a placeholder ("default"/empty) → MCP uses its own default.
+      • width/height/steps — drop entirely → MCP uses its sane defaults (1024²),
+        instead of a resolution/step count guessed from the prompt text.
+    """
+    if tool is None:
+        return args
+    props = (tool.parameters or {}).get("properties", {})
+    is_image_tool = "output_dir" in props
+    if is_image_tool:
+        args["output_dir"] = str(output_subdir("imagery"))
+        for k in ("width", "height", "steps"):
+            args.pop(k, None)
+    if "model" in props and (args.get("model") in (None, "", "default")):
+        args.pop("model", None)
+    return args
+
+
+async def _silent_hands_stream(
+    client: httpx.AsyncClient,
+    host: str,
+    *,
+    hands_model: str,
+    voice_model: str,
+    active_prompt: str,
+    messages: list[dict],
+    tool_schemas: list[dict],
+    registry: "ToolRegistry",
+    config: "AgentConfig",
+) -> AsyncIterator[dict]:
+    """Silent-hands butler turn for a tool-less voice model (e.g. ZINI).
+
+    A small tool-capable `hands_model` runs the agentic tool loop — its tool
+    calls/results are streamed to the client as real tool cards, but its prose is
+    SUPPRESSED. Then the `voice_model` plates: it composes the final answer in its
+    own voice from the tool *results* (synthesis-from-material — never a re-word of
+    the hands model's prose; see WORKSPACE/alice-hybrid-architecture.md "plate, not
+    re-cook"). If the hands model calls no tools, no findings are injected and the
+    voice model just answers directly — the normal pure-chat path.
+    """
+    MAX_OLLAMA_RETRIES = 3
+    total_in = 0
+    total_out = 0
+
+    # ── Phase 1: hands model runs the tool loop (prose suppressed) ──────────────
+    # Uses the executor prompt, NOT Alice's identity — see _HANDS_SYSTEM. The voice
+    # phase below restores Alice (active_prompt) for the user-facing answer.
+    hands_history: list[dict] = [{"role": "system", "content": _HANDS_SYSTEM}] + list(messages)
+    findings: list[tuple[str, bool, str]] = []  # (tool, success, result)
+
+    for turn in range(config.max_turns):
+        payload = {
+            "model": hands_model,
+            "messages": hands_history,
+            "stream": True,
+            "think": config.think,
+            "keep_alive": config.keep_alive,
+            "options": {"num_ctx": config.num_ctx},
+            "tools": tool_schemas,
+        }
+        assistant_content = ""
+        tool_calls: list[dict] = []
+        attempt = 0
+        while True:
+            assistant_content = ""
+            tool_calls = []
+            retry_turn = False
+            try:
+                async with client.stream("POST", f"{host}/api/chat", json=payload) as response:
+                    if response.status_code >= 400:
+                        body = await response.aread()
+                        detail = body.decode("utf-8", "replace").strip()
+                        if response.status_code >= 500 and attempt < MAX_OLLAMA_RETRIES:
+                            attempt += 1
+                            retry_turn = True
+                        elif response.status_code == 429:
+                            yield {"type": "error", "message":
+                                   "The cloud model is rate-limited right now (free tier). "
+                                   "Give it a moment and try again, or pick a local model for now."}
+                            return
+                        else:
+                            msg = f"Ollama HTTP {response.status_code} (hands model {hands_model})"
+                            if detail:
+                                msg += f": {detail[:500]}"
+                            yield {"type": "error", "message": msg}
+                            return
+                    else:
+                        async for line in response.aiter_lines():
+                            if not line.strip():
+                                continue
+                            try:
+                                data = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            m = data.get("message", {})
+                            # Prose is SUPPRESSED — only accumulated for the agent
+                            # loop's own bookkeeping, never streamed to the client.
+                            if m.get("content"):
+                                assistant_content += m["content"]
+                            if m.get("tool_calls"):
+                                tool_calls.extend(m["tool_calls"])
+                            if data.get("done"):
+                                total_in += data.get("prompt_eval_count", 0)
+                                total_out += data.get("eval_count", 0)
+            except httpx.ConnectError:
+                yield {"type": "error", "message": f"Ollama not reachable at {host}"}
+                return
+            except Exception as e:
+                yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+                return
+            if retry_turn:
+                await asyncio.sleep(0.25)
+                continue
+            break
+
+        print(f"[agent:hands] turn {turn}: {len(tool_calls)} tool call(s)")
+        if not tool_calls:
+            break  # hands model is done working
+
+        hands_history.append({"role": "assistant", "content": assistant_content, "tool_calls": tool_calls})
+        for i, tc in enumerate(tool_calls):
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            args = _coerce_args(fn.get("arguments", {}))
+            tc_id = f"tc_{turn}_{i}"
+            tool = registry.get(name)
+            args = _sanitize_tool_args(tool, args)
+
+            yield {"type": "tool_call_start", "id": tc_id, "tool": name, "args": args}
+            start = time.monotonic()
+            if tool is None:
+                result = {"success": False, "result": f"Unknown tool: {name}"}
+            else:
+                try:
+                    result = await tool.handler(args)
+                except Exception as e:
+                    result = {"success": False, "result": f"{type(e).__name__}: {e}"}
+            latency_ms = int((time.monotonic() - start) * 1000)
+            success = result.get("success", False)
+            raw_result = result.get("result", "")
+
+            yield {
+                "type": "tool_call_result", "id": tc_id, "tool": name,
+                "success": success, "result": raw_result, "latency_ms": latency_ms,
+            }
+
+            hist = raw_result if success else _TOOL_ERROR_PREFIX + raw_result
+            if len(hist) > 6_000:
+                hist = hist[:6_000] + "\n…[truncated for context window]"
+            hands_history.append({"role": "tool", "content": hist, "tool_name": name})
+            findings.append((name, success, raw_result))
+
+    # ── Phase 2: voice model plates the answer ──────────────────────────────────
+    if findings:
+        all_failed = all(not ok for _, ok, _ in findings)
+        any_failed = any(not ok for _, ok, _ in findings)
+        lines = ["## Tool results — the ground truth for your reply"]
+        # Failure-reporting ruleset. A tool genuinely RAN and errored — the weak voice
+        # model's failure mode is to deny the capability ("I'm not an image generator")
+        # or substitute its own theory. These rules force: present the error, not an
+        # opinion; offer a retry; offer the full error. Keep it tight & in-voice.
+        _FAIL_RULES = (
+            "When a tool result is marked FAILED, a tool DID run on your behalf and returned "
+            "an error — so:\n"
+            "  • Say plainly that the attempt failed. Do NOT claim success, do NOT describe a "
+            "result that doesn't exist, and do NOT say you 'can't do this' or aren't capable — "
+            "the capability exists, this attempt just errored.\n"
+            "  • Present the ERROR itself, not your own guess about what happened — give its "
+            "gist in one plain line (don't dump the raw text unless asked).\n"
+            "  • Offer to retry, and offer to show the full error if they'd like to see it."
+        )
+        if all_failed:
+            lines.append("EVERY tool call below FAILED — nothing was produced. " + _FAIL_RULES)
+        else:
+            lines.append(
+                "Your helpers ran the tools for the user's last message. Answer the user "
+                "directly in your own voice from the results below; do NOT describe running "
+                "tools yourself or claim you can't do something that already succeeded."
+            )
+            if any_failed:
+                lines.append(_FAIL_RULES)
+        lines.append("")
+        for name, success, res in findings:
+            status = "OK" if success else "FAILED"
+            snippet = (res or "").strip()
+            if len(snippet) > 600:
+                snippet = snippet[:600] + "…"
+            lines.append(f"- `{name}` → {status}: {snippet}")
+        lines.append("")
+        lines.append(
+            "If a succeeded result is an image file path, that image is shown to the user "
+            "inline automatically — acknowledge it and briefly describe what was made."
+        )
+        voice_system = active_prompt + "\n\n---\n\n" + "\n".join(lines)
+    else:
+        voice_system = active_prompt
+
+    voice_messages = [{"role": "system", "content": voice_system}] + list(messages)
+    payload = {
+        "model": voice_model,
+        "messages": voice_messages,
+        "stream": True,
+        "think": config.think,
+        "keep_alive": config.keep_alive,
+        "options": {"num_ctx": config.num_ctx},
+    }
+    attempt = 0
+    while True:
+        retry_turn = False
+        try:
+            async with client.stream("POST", f"{host}/api/chat", json=payload) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    detail = body.decode("utf-8", "replace").strip()
+                    if response.status_code >= 500 and attempt < MAX_OLLAMA_RETRIES:
+                        attempt += 1
+                        retry_turn = True
+                    elif response.status_code == 429:
+                        yield {"type": "error", "message":
+                               "The cloud model is rate-limited right now (free tier). "
+                               "Give it a moment and try again, or pick a local model for now."}
+                        return
+                    else:
+                        msg = f"Ollama HTTP {response.status_code}"
+                        if detail:
+                            msg += f": {detail[:500]}"
+                        yield {"type": "error", "message": msg}
+                        return
+                else:
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        m = data.get("message", {})
+                        if m.get("content"):
+                            yield {"type": "content_delta", "text": m["content"]}
+                        if data.get("done"):
+                            total_in += data.get("prompt_eval_count", 0)
+                            total_out += data.get("eval_count", 0)
+        except httpx.ConnectError:
+            yield {"type": "error", "message": f"Ollama not reachable at {host}"}
+            return
+        except Exception as e:
+            yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+            return
+        if retry_turn:
+            await asyncio.sleep(0.25)
+            continue
+        break
+
+    yield {
+        "type": "message_end",
+        "model": voice_model,
+        "usage": {"input_tokens": total_in, "output_tokens": total_out},
+    }
+
+
 @dataclass
 class AgentConfig:
     ollama_host: str
@@ -73,6 +366,7 @@ async def chat_stream(
     system_prompt: str | None = None,
     project_dir: str | None = None,
     working_dir: str | None = None,
+    files_root: str | None = None,
     user_name: str | None = None,
     mcp_hints_enabled: dict[str, bool] | None = None,
     research_mode: bool = False,
@@ -90,8 +384,9 @@ async def chat_stream(
     `project.toml`/`guidelines.md` shape three things —
       • model: explicit `model` → project `[models].default` → global default,
       • prompt: base Alice (request override or shipped default) + guidelines,
-      • tool scope: `working_dir` (the project folder, else ~/LookingGlass/Inbox)
-        is published to tools via a contextvar for the duration of the request.
+      • tool scope: `working_dir` (the project folder, else the user's configured
+        `files_root`, else ~/Documents/LookingGlass) is published to tools via a
+        contextvar for the duration of the request.
     Invariant #1 holds — a base system prompt is always present; guidelines are
     purely additive.
     """
@@ -139,9 +434,11 @@ async def chat_stream(
     if user_name and user_name.strip():
         base_prompt = f"The user's name is {user_name.strip()}.\n\n" + base_prompt
 
-    # Output scope: explicit working_dir → project folder → independent Inbox.
-    scope = working_dir or project_dir
-    work_path = Path(scope).expanduser() if scope else Path.home() / "LookingGlass" / "Inbox"
+    # Output scope: explicit working_dir → project folder → user's configured
+    # files root (independent chats) → default ~/Documents/LookingGlass. Tool
+    # outputs are organized into type subfolders under this root (see output_subdir).
+    scope = working_dir or project_dir or files_root
+    work_path = Path(scope).expanduser() if scope else Path.home() / "Documents" / "LookingGlass"
     try:
         work_path.mkdir(parents=True, exist_ok=True)
     except Exception:
@@ -236,6 +533,37 @@ async def chat_stream(
             attach_tools = bool(tool_schemas) and await _model_supports_tools(
                 client, host, resolved_model
             )
+
+            # Silent-hands butler: the voice model can't call tools but tools are
+            # available. Rather than let it fabricate tool calls (ZINI's failure
+            # mode), a small tool-capable hands model runs the agent loop and the
+            # voice model plates the result. Skipped for research/specialist (those
+            # already route to tool-capable models). Falls through to the normal
+            # tool-less loop (voice answers directly) if no distinct hands model.
+            if bool(tool_schemas) and not attach_tools and not research_mode and not specialist_mode:
+                hands_model = (
+                    project_model_for_mode(project_cfg, config.models, "hands")
+                    or project_model_for_mode(project_cfg, config.models, "coding")
+                )
+                if (
+                    hands_model
+                    and hands_model != resolved_model
+                    and await _model_supports_tools(client, host, hands_model)
+                ):
+                    print(f"[agent] silent-hands: {hands_model} runs tools → {resolved_model} plates")
+                    async for ev in _silent_hands_stream(
+                        client, host,
+                        hands_model=hands_model,
+                        voice_model=resolved_model,
+                        active_prompt=active_prompt,
+                        messages=messages,
+                        tool_schemas=tool_schemas,
+                        registry=registry,
+                        config=config,
+                    ):
+                        yield ev
+                    return
+
             for turn in range(config.max_turns):
                 payload = {
                     "model": resolved_model,
@@ -398,10 +726,16 @@ async def chat_stream(
                     args = _coerce_args(raw_args)
                     tc_id = f"tc_{turn}_{i}"
 
+                    tool = registry.get(name)
+                    # Route file-producing tools (e.g. OllamaMCP's local_image) into the
+                    # type-organized output folder and drop a placeholder model= — see
+                    # _sanitize_tool_args. Authoritative: the model doesn't get to pick
+                    # the image save location or pass model="default".
+                    args = _sanitize_tool_args(tool, args)
+
                     yield {"type": "tool_call_start", "id": tc_id, "tool": name, "args": args}
 
                     start = time.monotonic()
-                    tool = registry.get(name)
                     if tool is None:
                         result = {"success": False, "result": f"Unknown tool: {name}"}
                     else:

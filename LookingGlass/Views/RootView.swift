@@ -80,6 +80,7 @@ struct RootView: View {
     @StateObject private var toolCallStore = ToolCallStore()
     @StateObject private var reportPanel = ReportPanelState()
     @StateObject private var modelCatalog = ModelCatalog()
+    @StateObject private var imageViewer = ImageViewerState()
 
     private var railTab: RailTab {
         RailTab(rawValue: railSelectionRaw) ?? .chats
@@ -149,6 +150,19 @@ struct RootView: View {
         .environment(\.chatFontSize, fontSize)
         .environment(\.chatLineHeight, lineHeight)
         .environmentObject(reportPanel)
+        .environmentObject(imageViewer)
+        // Full-window image lightbox — covers rail + sidebar + chat. The lightbox
+        // animates its own open/close (hero-zoom + backdrop fade), so no transition
+        // here; it calls dismiss() after its close animation finishes.
+        .overlay {
+            if let path = imageViewer.path {
+                LightboxView(path: path, sourceRect: imageViewer.sourceRect) {
+                    imageViewer.dismiss()
+                }
+                .ignoresSafeArea()
+                .zIndex(200)
+            }
+        }
         // Full-window report panel overlay — covers rail + sidebar + chat
         .overlay {
             if reportPanel.isVisible, let path = reportPanel.path {

@@ -35,6 +35,13 @@ struct MessageBubble: View, Equatable {
     // SwiftUI Text has no line-height multiple; approximate via lineSpacing.
     private var bubbleLineSpacing: CGFloat { CGFloat(fontSize * (lineHeight - 1)) }
 
+    // On-disk images to render inline: generated images (from tool results) and
+    // user-uploaded / referenced images (from `[Image: …]` markers in content).
+    private var imagePaths: [String] { ImagePathScanner.paths(in: message) }
+    // Content with `[Image: …]` markers stripped, so the path isn't shown as
+    // literal text next to the rendered image.
+    private var displayContent: String { ImagePathScanner.stripMarkers(message.content) }
+
     // GitHub-flavored rendering, adapted to the chat. Built on MarkdownUI's
     // GitHub theme (headings with rules, blockquotes with a left bar, alternating
     // -row tables, task lists, thematic breaks) but with our chat voice: San
@@ -136,8 +143,17 @@ struct MessageBubble: View, Equatable {
                             .frame(maxWidth: 520, alignment: .leading)
                     }
                 }
-                if !(message.content.isEmpty && !message.toolCalls.isEmpty) {
+                // Show the prose bubble unless this turn is only tool activity /
+                // images with no text of its own.
+                if !displayContent.isEmpty || (message.isStreaming && message.toolCalls.isEmpty) {
                     bubbleContent
+                }
+                // Inline images: generated results and uploaded/referenced images.
+                if !imagePaths.isEmpty {
+                    ForEach(imagePaths, id: \.self) { path in
+                        InlineImageView(path: path)
+                            .frame(maxWidth: 360, alignment: .leading)
+                    }
                 }
                 if message.role == .assistant {
                     HStack(spacing: 8) {
@@ -199,7 +215,7 @@ struct MessageBubble: View, Equatable {
     }
 
     private var userBubble: some View {
-        Markdown(message.content)
+        Markdown(displayContent)
             .markdownTheme(chatTheme)
             .textSelection(.enabled)
             .padding(.horizontal, 16)
@@ -237,7 +253,7 @@ struct MessageBubble: View, Equatable {
                     .padding(.vertical, 13)
                     .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
             } else {
-                Markdown(message.content)
+                Markdown(displayContent)
                     .markdownTheme(chatTheme)
                     .textSelection(.enabled)
                     .padding(.horizontal, 16)

@@ -43,6 +43,29 @@ def working_dir() -> Path | None:
     return _working_dir.get()
 
 
+# Tool outputs are organized by type under the request's working dir (the project
+# folder, or the user's configured files root). Keeps generated images, written
+# documents, and downloaded resources from piling into one flat directory.
+_OUTPUT_SUBDIRS = {
+    "imagery": "generated-imagery",   # generated images (e.g. local_image)
+    "documents": "documents",         # written markdown / text files
+    "downloads": "downloads",         # fetched web resources, saved pages
+}
+
+
+def output_subdir(kind: str) -> Path:
+    """Resolve (and create) the type-organized output folder for `kind` under the
+    request's working dir. Falls back to home outside a chat request. Unknown
+    kinds resolve to the working dir itself."""
+    base = working_dir() or Path.home()
+    sub = base / _OUTPUT_SUBDIRS.get(kind, "")
+    try:
+        sub.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return sub
+
+
 def set_project_dir(path: Path | None):
     """Set the request's project dir (None for independent chats)."""
     return _project_dir.set(path)

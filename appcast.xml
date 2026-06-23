@@ -6,6 +6,28 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.9</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.9 — image generation, a real image viewer, and tidier files</h3>
+        <ul>
+          <li>Generate images right in chat — Alice creates them with your local model and shows them inline, with a full-screen viewer: zoom, pan, copy, and reveal in Finder.</li>
+          <li>Files you create stay organized — generated images, documents, and downloads land in their own folders. Pick your save location in Settings → System → Files.</li>
+          <li>More reliable tool use on the lightweight chat model — it now actually runs tools (image generation, search, files) instead of just describing them.</li>
+          <li>System monitor now lists every running model with its own memory use.</li>
+          <li>Your MCP servers and custom skills now survive app updates.</li>
+        </ul>
+      ]]></description>
+      <pubDate>Wed, 24 Jun 2026 01:11:23 +0530</pubDate>
+      <sparkle:version>20</sparkle:version>
+      <sparkle:shortVersionString>0.8.9</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.9/LookingGlass.dmg"
+        sparkle:edSignature="DwAyJ9AiKdoOvUj37bxr0QquxkXHD59viWU+SC/blCWB3AJDVTMXzCsXSZ6YxY0byxHE+hnXP5tWzonx/t7LBA=="
+        length="49924234"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.8</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.8 — UI polish, a new launch screen, and a refreshed icon</h3>

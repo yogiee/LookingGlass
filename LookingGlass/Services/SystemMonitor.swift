@@ -2,6 +2,13 @@ import Foundation
 import Darwin
 import IOKit
 
+/// One model currently resident in Ollama (from /api/ps), with its VRAM/RAM footprint.
+struct OllamaModelUsage: Identifiable {
+    let name: String
+    let vramGB: Double
+    var id: String { name }
+}
+
 @MainActor
 class SystemMonitor: ObservableObject {
     @Published var cpuPercent: Double = 0
@@ -10,7 +17,8 @@ class SystemMonitor: ObservableObject {
     @Published var ramTotalGB: Double = 0
     @Published var ollamaStatus: String = "—"
     @Published var ollamaModel: String? = nil
-    @Published var ollamaVRAMGB: Double = 0
+    @Published var ollamaVRAMGB: Double = 0          // total across all running models
+    @Published var ollamaModels: [OllamaModelUsage] = []  // per-model breakdown
     @Published var lastTokensPerSec: Double = 0
     @Published var cpuSubtitle: String = ""
     @Published var gpuSubtitle: String = ""
@@ -121,6 +129,7 @@ class SystemMonitor: ObservableObject {
             } else {
                 ollamaModel = nil
                 ollamaVRAMGB = 0
+                ollamaModels = []
             }
         }
     }
@@ -131,11 +140,16 @@ class SystemMonitor: ObservableObject {
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             let decoded = try JSONDecoder().decode(OllamaPsResponse.self, from: data)
-            ollamaModel = decoded.models.first?.name
-            ollamaVRAMGB = Double(decoded.models.first?.size_vram ?? 0) / 1_073_741_824
+            let models = decoded.models.map {
+                OllamaModelUsage(name: $0.name, vramGB: Double($0.size_vram ?? 0) / 1_073_741_824)
+            }
+            ollamaModels = models
+            ollamaModel = models.first?.name
+            ollamaVRAMGB = models.reduce(0) { $0 + $1.vramGB }   // total across all
         } catch {
             ollamaModel = nil
             ollamaVRAMGB = 0
+            ollamaModels = []
         }
     }
 

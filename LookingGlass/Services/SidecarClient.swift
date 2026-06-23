@@ -59,6 +59,7 @@ class SidecarClient {
         enabledTools: [String]?,
         systemPrompt: String?,
         projectDir: String?,
+        filesRoot: String? = nil,
         userName: String? = nil,
         mcpHintsEnabled: [String: Bool]? = nil,
         researchMode: Bool = false,
@@ -85,6 +86,11 @@ class SidecarClient {
                         body["system_prompt"] = systemPrompt
                     }
                     if let projectDir { body["project_dir"] = projectDir }
+                    // User-configured save root for independent (non-project) chats.
+                    // Omitted when empty/in a project — the sidecar applies its default.
+                    if let filesRoot, !filesRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        body["files_root"] = filesRoot
+                    }
                     if let userName, !userName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         body["user_name"] = userName
                     }

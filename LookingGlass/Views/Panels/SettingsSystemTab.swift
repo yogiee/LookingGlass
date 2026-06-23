@@ -5,6 +5,15 @@ struct SettingsSystemTab: View {
     @AppStorage("systemPrompt") private var systemPrompt = ""
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
     @AppStorage("appleIntelligenceEnabled") private var appleIntelligenceEnabled = true
+    @AppStorage("filesRoot") private var filesRoot = ""
+
+    /// Where independent (non-project) chats save files when no custom path is set.
+    /// Mirrors the sidecar's default in agent.py — keep the two in sync.
+    private var defaultFilesRoot: String {
+        (FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("LookingGlass").path)
+            ?? "~/Documents/LookingGlass"
+    }
 
     @State private var tools: [ToolInfo] = []
     @State private var loadingTools = true
@@ -16,6 +25,7 @@ struct SettingsSystemTab: View {
         Form {
             personalitySection
             connectionSection
+            filesSection
             appleIntelligenceSection
             toolsSection
         }
@@ -77,6 +87,52 @@ struct SettingsSystemTab: View {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: Files
+
+    private var filesSection: some View {
+        Section("Files") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Save location")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+
+                HStack(spacing: 8) {
+                    Text(filesRoot.isEmpty ? defaultFilesRoot : filesRoot)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(filesRoot.isEmpty ? .secondary : .primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Choose…") { chooseFilesRoot() }
+                        .font(.system(size: 11))
+                    if !filesRoot.isEmpty {
+                        Button("Reset") { filesRoot = "" }
+                            .font(.system(size: 11))
+                    }
+                }
+
+                Text("Where files Alice creates in independent chats are saved, organized by type: generated-imagery, documents, downloads. Chats inside a Project save to the project folder instead.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func chooseFilesRoot() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Choose"
+        panel.directoryURL = URL(fileURLWithPath: filesRoot.isEmpty ? defaultFilesRoot : filesRoot)
+        if panel.runModal() == .OK, let url = panel.url {
+            filesRoot = url.path
         }
     }
 

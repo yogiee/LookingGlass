@@ -13,7 +13,30 @@ effect with no sidecar restart (cf. the tools' auto-discovery, invariant #4).
 from dataclasses import dataclass
 from pathlib import Path
 
-SKILLS_DIR = Path(__file__).parent / "skills"
+# Shipped skills ride in the bundle (versioned with the app, always fresh on update).
+SHIPPED_SKILLS_DIR = Path(__file__).parent / "skills"
+# User-added/imported skills live OUTSIDE the bundle so an app update — which replaces
+# Contents/Resources/sidecar wholesale — never wipes them (same rule as the MCP config
+# and history.db). On a name collision the user copy wins, so a user can override a
+# built-in by reusing its name.
+USER_SKILLS_DIR = (
+    Path.home() / "Library" / "Application Support" / "LookingGlass" / "skills"
+)
+
+
+def _skill_dirs() -> list[Path]:
+    """Skill folders from both roots — shipped first, then user, so a same-named
+    user skill overrides the built-in (see all_skills' dict merge)."""
+    dirs: list[Path] = []
+    for root in (SHIPPED_SKILLS_DIR, USER_SKILLS_DIR):
+        if root.is_dir():
+            dirs.extend(d for d in sorted(root.iterdir()) if d.is_dir())
+    return dirs
+
+
+def is_builtin(name: str) -> bool:
+    """Whether a skill ships in the bundle (and so can't be deleted by the user)."""
+    return (SHIPPED_SKILLS_DIR / (name or "")).is_dir()
 
 
 @dataclass
@@ -80,12 +103,15 @@ def _load_one(skill_dir: Path) -> "Skill | None":
 
 
 def all_skills() -> list[Skill]:
-    """Every valid skill under skills/, sorted by folder name. Filesystem scan per
-    call — cheap (a handful of small files) and keeps skills live-editable."""
-    if not SKILLS_DIR.is_dir():
-        return []
-    found = (_load_one(d) for d in sorted(SKILLS_DIR.iterdir()) if d.is_dir())
-    return [s for s in found if s is not None]
+    """Every valid skill across the shipped (bundle) and user (Application Support)
+    roots, sorted by name. Filesystem scan per call — cheap and keeps skills
+    live-editable. A user skill overrides a shipped one of the same name."""
+    by_name: dict[str, Skill] = {}
+    for d in _skill_dirs():               # shipped first, then user (user wins)
+        s = _load_one(d)
+        if s is not None:
+            by_name[s.name] = s
+    return sorted(by_name.values(), key=lambda s: s.name)
 
 
 def get_skill(name: str) -> "Skill | None":
