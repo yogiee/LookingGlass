@@ -577,12 +577,17 @@ struct ChatView: View {
         .padding(.bottom, 4)
     }
 
-    /// Compact label for the switcher: the chat's effective model, tag prefix trimmed
-    /// to keep the toolbar tidy ("gemma4:26b" → "26b"; cloud kept readable).
+    /// Compact label for the switcher: name + variant so it's clear WHICH model is
+    /// selected ("gemma4:26b", "gpt-oss:120b-cloud"). Any `namespace/` prefix is
+    /// dropped, and a bare `latest` tag (which carries no info) collapses to just the
+    /// name — so "s80982708/ZINI-LOCAL:latest" reads "ZINI-LOCAL", not "latest".
     private var modelSwitcherLabel: String {
         guard let m = effectiveModel else { return "Auto" }
-        if let after = m.split(separator: ":").last, !after.isEmpty { return String(after) }
-        return m
+        let bare = m.split(separator: "/").last.map(String.init) ?? m   // drop namespace/
+        let parts = bare.split(separator: ":", maxSplits: 1).map(String.init)
+        let base = parts.first ?? bare
+        let tag = parts.count > 1 ? parts[1] : ""
+        return (tag.isEmpty || tag == "latest") ? base : "\(base):\(tag)"
     }
 
     private var modelSwitcher: some View {

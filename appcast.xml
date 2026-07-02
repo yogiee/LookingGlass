@@ -6,6 +6,25 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.10</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.10 — model picker &amp; launch screen fixes</h3>
+        <ul>
+          <li>The per-chat model button now shows the model's name and variant (e.g. "gemma4:26b"), not just its size — so it's always clear which model a chat is using.</li>
+          <li>Launch screen: Alice now stands out clearly against the dark background.</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 02 Jul 2026 22:50:46 +0530</pubDate>
+      <sparkle:version>21</sparkle:version>
+      <sparkle:shortVersionString>0.8.10</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.10/LookingGlass.dmg"
+        sparkle:edSignature="/7O4O1deb9dMYuZdabcHnbUlMWm4EPV1+nabqXpRwqDcyBas4EXu4161WK7QXNnesBzL9AYY3hozh+5D9BuRBw=="
+        length="50235357"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.9</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.9 — image generation, a real image viewer, and tidier files</h3>
