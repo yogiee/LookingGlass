@@ -2,7 +2,7 @@ import asyncio
 import json
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -371,6 +371,7 @@ async def chat_stream(
     mcp_hints_enabled: dict[str, bool] | None = None,
     research_mode: bool = False,
     specialist_mode: bool = False,
+    models_override: dict | None = None,
 ) -> AsyncIterator[dict]:
     """Agentic loop:
 
@@ -391,6 +392,14 @@ async def chat_stream(
     purely additive.
     """
     host = ollama_host or config.ollama_host
+
+    # Per-request model routing override (F2 — off-bundle user model config): the app sends
+    # a role→model map (the active preset) that layers over the shipped config.toml [models].
+    # Rebinding `config` here means every downstream resolver (mode routing, silent-hands)
+    # sees the effective table. Absent/empty → identical to the bundled default.
+    # See WORKSPACE/model-config-workflow.md.
+    if models_override:
+        config = replace(config, models={**config.models, **models_override})
 
     project_cfg = load_project(project_dir)
 

@@ -99,6 +99,9 @@ class SidecarClient {
                     }
                     if researchMode { body["research_mode"] = true }
                     if specialistMode { body["specialist_mode"] = true }
+                    // Off-bundle user model config (role→model preset). Absent → the sidecar
+                    // uses its shipped config.toml [models]. See ModelConfigStore / F2.
+                    if let modelsMap = ModelConfigStore.activeMap() { body["models"] = modelsMap }
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
