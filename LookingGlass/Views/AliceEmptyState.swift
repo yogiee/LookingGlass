@@ -23,7 +23,7 @@ struct AliceEmptyState: View {
         HStack(alignment: .top, spacing: -6) {
             bubble
                 .padding(.top, 24)            // float beside Alice's head, not her feet
-            Asset.image("alice-full")
+            Asset.image("alice-full-glow")   // subtle rim glow so the dark bow/shoes read on dark bg
                 .scaledToFit()
                 .frame(height: 320)
         }

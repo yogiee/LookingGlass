@@ -17,8 +17,8 @@ BUILD_DIR="$PROJECT_DIR/build"
 APP_NAME="LookingGlass"          # bundle + binary name (no spaces)
 DISPLAY_NAME="Looking Glass"     # shown in Finder / Dock / menu bar
 BUNDLE_ID="com.yogi.LookingGlass"
-VERSION="0.8.9"
-BUILD_NUMBER="20"
+VERSION="0.8.10"
+BUILD_NUMBER="21"
 
 # Shared EdDSA public key for Sparkle (private key in Keychain, machine-bound).
 SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-k47OPDePNJN2Iyiu28Hz73RzNv/GHyryeSPWvGhv1+c=}"
@@ -155,8 +155,17 @@ rm -rf "$ICONSET"
 
 # ── 7. Ad-hoc code sign (Apple Silicon requires a signature to run) ──────────
 echo "  [7/8] Ad-hoc code signing..."
-codesign --force --sign - --timestamp=none "$APP/Contents/Frameworks/Sparkle.framework" 2>/dev/null || true
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "  (codesign reported warnings — ok for personal/unsigned)"
+# Scrub Finder detritus first: a resource added with com.apple.FinderInfo (e.g. a
+# PNG saved by Photoshop/Preview carries a `PNGf8BIM` type/creator) or a stray
+# .DS_Store makes `codesign --deep` fail with "resource fork, Finder information,
+# or similar detritus not allowed" — leaving a BROKEN signature the kernel kills on
+# launch (CODESIGNING "Invalid Page" crash). Strip xattrs + .DS_Store so the sign
+# is clean. Do NOT swallow the codesign error — a failed sign must fail the build.
+find "$APP" -name '.DS_Store' -delete
+xattr -cr "$APP"
+codesign --force --sign - --timestamp=none "$APP/Contents/Frameworks/Sparkle.framework"
+codesign --force --deep --sign - "$APP"
+codesign --verify --deep "$APP" || { echo "  ERROR: code signature invalid — app will crash on launch"; exit 1; }
 
 # ── 8. DMG (release only) ────────────────────────────────────────────────────
 if [ "$CONFIG" != "release" ]; then
