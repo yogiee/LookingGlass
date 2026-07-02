@@ -18,15 +18,54 @@
 #   location    local | cloud
 #   recommended true highlights the model in the picker
 #   note        one-line rationale shown as a subtitle
+#
+# Roles mirror the live small-specialist fleet in config.toml [models]; enrichment data
+# from the LookingGlass consumer manifest (benchllama@2026-07-02, first clean full run).
+
+# ── Live fleet (small-specialist, config.toml [models]) ──────────────────────
+[models."s80982708/ZINI-LOCAL:latest"]
+role = "chat-default"
+tier = "lite"
+tokps = 62
+ram_gb = 5.7
+location = "local"
+recommended = true
+note = "Live chat default (voice). 8B Llama-3, holds Alice's voice; completion-only — silent-hands runs tools."
+
+[models."gemma4:12b-mlx"]
+role = "research"
+tier = "standard"
+ram_gb = 6.9
+location = "local"
+recommended = true
+note = "Tools + research lane. MLX, confab-clean, tool-capable, holds long context."
+
+[models."granite4.1:3b"]
+role = "tool"
+tier = "lite"
+ram_gb = 2.1
+location = "local"
+recommended = false
+note = "Silent-hands tool executor / router. Best small hands model; not a chat voice."
+
+# ── Fallbacks (stable-lock revert targets + base default) ────────────────────
+[models."gemma4:26b-mlx"]
+role = "chat-fallback"
+tier = "flagship"
+tokps = 45
+ram_gb = 16.4
+location = "local"
+recommended = false
+note = "Stable-lock default + deep-research local tail. MLX: full-context fidelity, ignores num_ctx (unbounded KV), no vision."
 
 [models."gemma4:26b"]
-role = "chat-default"
+role = "chat-fallback"
 tier = "flagship"
 tokps = 48
 ram_gb = 17
 location = "local"
-recommended = true
-note = "Default. Honest, full Alice voice, num_ctx-leashed (GGUF)."
+recommended = false
+note = "Base fallback (global default outside fleet routing). GGUF: num_ctx-leashed KV + ollama-mcp vision fallback."
 
 [models."gemma4:12b"]
 role = "chat-fallback"
@@ -35,24 +74,24 @@ tokps = 24
 ram_gb = 7.6
 location = "local"
 recommended = false
-note = "Lean fallback + tool worker. Lower RAM, still in-voice."
+note = "Lean GGUF fallback + stable-lock coding worker. Lower RAM, still in-voice."
 
 [models."gemma4:latest"]
 role = "tool"
 tier = "lite"
 location = "local"
 recommended = false
-note = "Functional fallback for tool/MCP tasks."
+note = "Functional fallback / coding picker option."
 
-[models."qwen3.5:4b-mlx"]
-role = "chat-fallback"
-tier = "lite"
-tokps = 64
-ram_gb = 3.5
+# ── Candidates (bench-keep, not in the live fleet) ───────────────────────────
+[models."ornith:9b"]
+tier = "standard"
+ram_gb = 5.6
 location = "local"
 recommended = false
-note = "Speed pick. Fast + tiny; world-knowledge confabulation risk in casual chat."
+note = "Agentic-coding candidate (think-survives, top-local consistency). Flagged for a future silent-hands/agent lane."
 
+# ── Utility (non-chat roles) ─────────────────────────────────────────────────
 [models."qwen2.5vl:3b"]
 role = "vision"
 tier = "lite"
@@ -68,6 +107,16 @@ location = "local"
 recommended = false
 note = "Fast classifier (router candidate). Not for chat."
 
+[models."qwen3.5:4b-mlx"]
+role = "chat-fallback"
+tier = "lite"
+tokps = 64
+ram_gb = 3.5
+location = "local"
+recommended = false
+note = "Dropped from fleet 2026-06-22 (confabulates world-knowledge); manual pick only."
+
+# ── Cloud (consent-gated) ────────────────────────────────────────────────────
 [models."gemma4:31b-cloud"]
 role = "specialist"
 tier = "flagship"
