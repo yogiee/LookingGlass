@@ -8,6 +8,18 @@
 # fallback; gemma4:latest is a per-chat pick via Settings → Model. (qwen3.5:4b-mlx dropped
 # 2026-06-22 per the manifest keep_policy — fast but confabulates world-knowledge.)
 # See gotcha_small_model_confabulation + reference_ollama_cloud_models (MLX num_ctx gotcha).
+#
+# 2026-06-29 UPDATE: the overnight bench (benchllama@06-29) REVERSED 26b-mlx's standing as a
+# *build*: MLX now wins prefill (726 vs 382), wall (7.6 vs 8.6s), footprint (16.4 vs 17.4GB)
+# AND holds prefill at depth (Battery-G collapse 0.948 vs 0.442 @32k). Quality is a tie
+# (coding 1.000 vs 0.983; Alice-voice smoke-test ✓ on the 4 standard Qs). So the STABLE-LOCK
+# revert default below now points at gemma4:26b-mlx. The ONE un-retired caveat keeps THIS live
+# base on GGUF: MLX still ignores num_ctx, so the 16384 KV leash is a no-op (bench validated
+# only to 32k filled, not marathon chats) — GGUF here = bounded KV. See project_consumer_manifest.
+# 2026-07-02 (first CLEAN re-run, no clobber): swap CONFIRMED — prefill 730 vs 473, G-collapse
+# 0.972 vs 0.44 hold; quality a wash. The two 06-29 caveats were single-run noise: the "MLX fails
+# D6 parallel" did NOT reproduce, and consistency FLIPPED to GGUF (F 0.916 vs 0.869) — each build
+# won one run, so call F a wash and keep MLX on speed/size/long-ctx. Rationale unchanged.
 default = "gemma4:26b"
 ollama_host = "http://localhost:11434"
 think = false
@@ -77,7 +89,7 @@ keep_alive = "5m"
 #                                       here. Falls back to `coding` if unset.
 #
 # ── STABLE LOCK (restore these 4 lines + delete the fleet block to revert) ────────────
-#   default    = "gemma4:26b"
+#   default    = "gemma4:26b-mlx"  # 06-29: MLX twin won the bench (faster/lighter/holds-prefill@depth; voice ✓). GGUF 26b stays on disk as the live base above + ollama-mcp vision fallback.
 #   coding     = "gemma4:12b"
 #   research   = "gpt-oss:120b-cloud"
 #   specialist = "gemma4:31b-cloud"
@@ -85,6 +97,9 @@ keep_alive = "5m"
 default       = "s80982708/ZINI-LOCAL:latest"
 coding        = "gemma4:12b-mlx"
 research      = "gemma4:12b-mlx"
+# deep_research availability/privacy fallback chain (runtime uses the primary; the local tail
+# is a manual pick when cloud is unreachable — 06-29 bench: 26b-mlx holds long-ctx prefill @32k,
+# a sound local RAG/synthesis last resort): gpt-oss:120b-cloud -> gemma4:31b-cloud -> gemma4:26b-mlx
 deep_research = "gpt-oss:120b-cloud"
 specialist    = "gemma4:31b-cloud"
 hands         = "granite4.1:3b"
