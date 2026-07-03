@@ -128,13 +128,13 @@ struct LightboxView: View {
     @State private var cropRect = CoreImageService.fullCrop   // normalized, top-left origin
     @State private var cropStart = CGRect.zero
     @State private var cropDragging = false
-    @ObservedObject private var sr = SuperResolutionService.shared   // Real-ESRGAN 4× (Slice 3)
+    @ObservedObject private var sr = SuperResolutionService.shared   // RealPLKSR 4× (Slice 3)
     @State private var isUpscaling = false
     @State private var upscaleReview = false          // 3b: reviewing an upscale result
-    @State private var esrganImage: NSImage?
+    @State private var upscaledImage: NSImage?
     @State private var lanczosImage: NSImage?
     @State private var blendedImage: NSImage?
-    @State private var upscaleStrength: Double = 1.0
+    @State private var upscaleStrength: Double = 0.75   // Detail slider POSITION 0…1 (→ detailBlend); .75 = 85% RealPLKSR
     @State private var exportFormat: CoreImageService.ExportFormat = .png
     @State private var previewImage: NSImage?            // Core Image-rendered quality preview
     @State private var baseImage: NSImage?               // the original, loaded once
@@ -363,12 +363,12 @@ struct LightboxView: View {
             .onChange(of: compareMode) { _, on in
                 if on { cropMode = false }
             }
-            // Re-blend the upscale result when Strength changes (debounced, off-main).
+            // Re-blend the upscale result when Detail changes (debounced, off-main).
             .task(id: upscaleReview ? "\(upscaleStrength)" : "off") {
-                guard upscaleReview, let e = esrganImage, let l = lanczosImage else { return }
+                guard upscaleReview, let e = upscaledImage, let l = lanczosImage else { return }
                 try? await Task.sleep(for: .milliseconds(80))
                 guard !Task.isCancelled else { return }
-                let s = upscaleStrength
+                let s = detailBlend(upscaleStrength)   // slider position → clamped RealPLKSR fraction
                 let blended = await Task.detached { CoreImageService.blend(l, over: e, amount: s) }.value
                 guard !Task.isCancelled else { return }
                 blendedImage = blended
@@ -476,7 +476,7 @@ struct LightboxView: View {
                 Image(systemName: "wand.and.stars")
             }
             .disabled(!sr.isReady || isUpscaling)
-            .help(sr.isReady ? "Upscale 4× (Real-ESRGAN)" : "Enable the 4× upscaler in Settings → Images")
+            .help(sr.isReady ? "Upscale 4× (RealPLKSR)" : "Enable the 4× upscaler in Settings → Images")
         }
         .buttonStyle(.borderless)
         .font(.system(size: 13))
@@ -586,15 +586,32 @@ struct LightboxView: View {
 
     // MARK: Upscale (Slice 3) + review (Slice 3b)
 
-    /// Run Real-ESRGAN 4× + a Lanczos 4× (for the Strength blend), then enter the review overlay.
+    /// Maps the Detail slider position (0…1) to the RealPLKSR-fraction fed to `CoreImageService.blend`
+    /// (1 = all RealPLKSR, 0 = all Lanczos). Deliberately non-linear and clamped so NEITHER end is a
+    /// wasted option: at 0 we still keep 50% RealPLKSR (pure Lanczos would throw away the neural pass),
+    /// and at 1 we keep 5% Lanczos (pure output of a small, speed-tuned model shows edge overshoot the
+    /// blend exists to soften). Anchors (position → RealPLKSR): 0→.50, .50→.75, .75→.85 (default), 1→.95;
+    /// piecewise-linear between them (a touch more sensitive below the midpoint, matching how it reads).
+    private func detailBlend(_ pos: Double) -> Double {
+        let p = min(max(pos, 0), 1)
+        switch p {
+        case ..<0.50: return 0.50 + (p / 0.50) * (0.75 - 0.50)            // 0…½   → .50…​.75
+        case ..<0.75: return 0.75 + ((p - 0.50) / 0.25) * (0.85 - 0.75)  // ½…¾   → .75…​.85
+        default:      return 0.85 + ((p - 0.75) / 0.25) * (0.95 - 0.85)  // ¾…1   → .85…​.95
+        }
+    }
+
+    /// Run RealPLKSR 4× + a Lanczos 4× (for the Detail blend), then enter the review overlay.
     private func runUpscale() async {
         isUpscaling = true
         let data = await SuperResolutionService.shared.upscale(path: path)
-        guard let data, let esrgan = NSImage(data: data) else { isUpscaling = false; return }
+        guard let data, let upscaled = NSImage(data: data) else { isUpscaling = false; return }
         let lanczos = CoreImageService.preview(path: path, scale: 4, sharpen: false)   // spinner still up
         isUpscaling = false
-        esrganImage = esrgan; lanczosImage = lanczos
-        upscaleStrength = 1.0; blendedImage = esrgan
+        upscaledImage = upscaled; lanczosImage = lanczos
+        // Default slider position .75 → 85% RealPLKSR / 15% Lanczos (see detailBlend) — the sweet spot
+        // that dampens edge overshoot without losing detail. The .task(id:) re-blends to it immediately.
+        upscaleStrength = 0.75; blendedImage = upscaled
         resizeMode = false; cropMode = false; compareMode = false
         zoom = 1; lastZoom = 1; offset = .zero; lastOffset = .zero
         withAnimation(.easeInOut(duration: 0.15)) { upscaleReview = true }
@@ -606,7 +623,7 @@ struct LightboxView: View {
         return "\(Int(b.size.width)) × \(Int(b.size.height))"
     }
 
-    /// Review controls: Strength (ESRGAN↔Lanczos blend) · Compare · Save As · Apply · Cancel.
+    /// Review controls: Detail (RealPLKSR↔Lanczos blend) · Compare · Save As · Apply · Cancel.
     private var reviewControls: some View {
         HStack(spacing: 14) {
             Image(systemName: "wand.and.stars").foregroundStyle(.secondary)
@@ -662,7 +679,7 @@ struct LightboxView: View {
 
     private func exitReview() {
         withAnimation(.easeInOut(duration: 0.15)) { upscaleReview = false; compareMode = false }
-        esrganImage = nil; lanczosImage = nil; blendedImage = nil; upscaleStrength = 1.0
+        upscaledImage = nil; lanczosImage = nil; blendedImage = nil; upscaleStrength = 0.75
         refit()
     }
 

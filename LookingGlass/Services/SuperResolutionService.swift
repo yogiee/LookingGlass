@@ -5,11 +5,13 @@ import CoreImage
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Real-ESRGAN 4× super-resolution (Core ML, ANE). The 66.9 MB model is downloaded on first use
+/// RealPLKSR 4× super-resolution (Core ML, ANE). The ~30 MB model is downloaded on first use
 /// (Settings → Images) into Application Support and compiled on-device — kept out of the app bundle
 /// so the DMG stays small (Invariant #7). Tier-1: the Upscale button stays disabled until it's ready
 /// and nothing depends on it. Fixed 512→2048 shape → tile the image into 512 blocks, 4× each, stitch.
-/// See WORKSPACE/apple-native/01-imaging-and-vision.md §C. BSD-3 model (xinntao/Real-ESRGAN).
+/// See WORKSPACE/apple-native/01-imaging-and-vision.md §C. Model: NomosWebPhoto_RealPLKSR
+/// (CC-BY-4.0, Philip Hofmann) — won a multi-image eval over Real-ESRGAN/ESRGAN/Nomos8kSC (more real
+/// detail, respects shallow DoF, no plastic look); shipped with a light 15% Lanczos blend by default.
 @MainActor
 final class SuperResolutionService: ObservableObject {
     static let shared = SuperResolutionService()
@@ -18,7 +20,7 @@ final class SuperResolutionService: ObservableObject {
     enum Status: Equatable { case notInstalled, downloading(Double), compiling, ready, failed(String) }
     @Published private(set) var status: Status = .notInstalled
 
-    private let assetURL = URL(string: "https://github.com/yogiee/LookingGlass/releases/download/models-v1/RealESRGAN4x.mlmodel")!
+    private let assetURL = URL(string: "https://github.com/yogiee/LookingGlass/releases/download/models-v2/RealPLKSR4x.mlmodel")!
     private let tileIn = 512
     private let factor = 4
     private var downloader: ModelDownloader?
@@ -29,8 +31,8 @@ final class SuperResolutionService: ObservableObject {
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
     }
-    private var mlmodelURL: URL { modelsDir.appendingPathComponent("RealESRGAN4x.mlmodel") }
-    private var compiledURL: URL { modelsDir.appendingPathComponent("RealESRGAN4x.mlmodelc") }
+    private var mlmodelURL: URL { modelsDir.appendingPathComponent("RealPLKSR4x.mlmodel") }
+    private var compiledURL: URL { modelsDir.appendingPathComponent("RealPLKSR4x.mlmodelc") }
 
     var isReady: Bool { FileManager.default.fileExists(atPath: compiledURL.path) }
 

@@ -181,7 +181,7 @@ struct SettingsSystemTab: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("4× image upscaler")
                             .font(.system(size: 12, weight: .medium))
-                        Text("On-device Real-ESRGAN super-resolution — adds real detail to a generated image in the viewer (an “Upscale 4×” button appears). Downloads a ~67 MB model once.")
+                        Text("On-device RealPLKSR super-resolution — adds real detail to a generated image in the viewer (an “Upscale 4×” button appears). Downloads a ~30 MB model once.")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
