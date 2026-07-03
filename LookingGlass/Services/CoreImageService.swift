@@ -55,6 +55,28 @@ enum CoreImageService {
         CIImage(contentsOf: URL(fileURLWithPath: path))?.extent.size
     }
 
+    /// Linear blend of two same-size images (for the upscale Strength dial): `amount` 1.0 = all
+    /// `top` (Real-ESRGAN), 0.0 = all `base` (Lanczos). Dials back the "plasticky" GAN look.
+    static func blend(_ base: NSImage?, over top: NSImage?, amount t: Double) -> NSImage? {
+        guard let top else { return base }
+        guard let base, t < 0.999,
+              let bcg = base.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let tcg = top.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let f = CIFilter(name: "CIDissolveTransition") else { return top }
+        let bci = CIImage(cgImage: bcg)
+        f.setValue(bci, forKey: kCIInputImageKey)                     // t=0 → base (Lanczos)
+        f.setValue(CIImage(cgImage: tcg), forKey: kCIInputTargetImageKey)  // t=1 → top (ESRGAN)
+        f.setValue(max(0, t), forKey: kCIInputTimeKey)
+        guard let out = f.outputImage, let cg = context.createCGImage(out, from: bci.extent) else { return top }
+        return NSImage(cgImage: cg, size: bci.extent.size)
+    }
+
+    /// Encode an NSImage as PNG data.
+    static func pngData(_ image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation, let bm = NSBitmapImageRep(data: tiff) else { return nil }
+        return bm.representation(using: .png, properties: [:])
+    }
+
     /// A preview NSImage of the processed result — for live display in the lightbox while resizing.
     static func preview(path: String, crop: CGRect = fullCrop, scale: CGFloat, sharpen: Bool) -> NSImage? {
         guard let ci = process(path: path, crop: crop, scale: scale, sharpen: sharpen),

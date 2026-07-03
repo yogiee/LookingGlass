@@ -6,6 +6,7 @@ struct SettingsSystemTab: View {
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
     @AppStorage("appleIntelligenceEnabled") private var appleIntelligenceEnabled = true
     @AppStorage("ocrPastedImages") private var ocrPastedImages = true
+    @ObservedObject private var upscaler = SuperResolutionService.shared
     @AppStorage("filesRoot") private var filesRoot = ""
 
     /// Where independent (non-project) chats save files when no custom path is set.
@@ -174,6 +175,45 @@ struct SettingsSystemTab: View {
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("4× image upscaler")
+                            .font(.system(size: 12, weight: .medium))
+                        Text("On-device Real-ESRGAN super-resolution — adds real detail to a generated image in the viewer (an “Upscale 4×” button appears). Downloads a ~67 MB model once.")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    upscalerControl
+                }
+                if case .failed(let msg) = upscaler.status {
+                    Text(msg).font(.system(size: 10)).foregroundStyle(.red)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var upscalerControl: some View {
+        switch upscaler.status {
+        case .notInstalled, .failed:
+            Button("Download") { Task { await upscaler.install() } }
+        case .downloading(let p):
+            HStack(spacing: 6) {
+                ProgressView(value: p).frame(width: 90)
+                Text("\(Int(p * 100))%").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+            }
+        case .compiling:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Preparing…").font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        case .ready:
+            HStack(spacing: 8) {
+                Label("Installed", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 11)).foregroundStyle(.green)
+                Button("Remove") { upscaler.remove() }.controlSize(.small)
             }
         }
     }
