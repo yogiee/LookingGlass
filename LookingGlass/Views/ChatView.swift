@@ -161,8 +161,10 @@ class ChatViewModel: ObservableObject {
                 if isFirstTurn, !Task.isCancelled,
                    let assistantContent = messages.last.map({ $0.role == .assistant ? $0.content : "" }),
                    !assistantContent.isEmpty {
+                    // Feed the FM a marker-free prompt — a raw file path can trip its guardrails
+                    // (→ nil → no rename, leaving the ugly "[Image: …]" title).
                     if let fmTitle = await AppleIntelligenceService.shared.generateConversationTitle(
-                        userMessage: titleSeed, assistantReply: assistantContent) {
+                        userMessage: ImagePathScanner.stripMarkers(titleSeed), assistantReply: assistantContent) {
                         store.rename(conversationID, to: fmTitle)
                     }
                 }
@@ -175,9 +177,12 @@ class ChatViewModel: ObservableObject {
         }
     }
 
-    /// Conversation title from the first user message — first line, trimmed, capped.
+    /// Conversation title from the first user message — first line, trimmed, capped. Strips any
+    /// `[Image: /path]` markers first so an image-drop chat doesn't title itself with a file path
+    /// (falls back to the prose, or "New Chat" for an image-only message).
     private static func deriveTitle(_ text: String) -> String {
-        let firstLine = text.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? text
+        let stripped = ImagePathScanner.stripMarkers(text)
+        let firstLine = stripped.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) ?? stripped
         let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? "New Chat" : String(trimmed.prefix(60))
     }

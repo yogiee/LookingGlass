@@ -33,6 +33,25 @@ private struct NoDragBackground: NSViewRepresentable {
     }
 }
 
+/// Restores native title-bar behavior on the hidden title bar: drag to move, double-click to
+/// zoom. The content covers the title-bar strip (fullSizeContentView) and NoDragBackground makes
+/// it non-draggable, so AppKit's own handling never sees these events — we forward them here.
+private struct TitleBarBehavior: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { _Strip() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class _Strip: NSView {
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func mouseDown(with event: NSEvent) {
+            if event.clickCount == 2 {
+                window?.performZoom(nil)               // double-click → zoom (maximize)
+            } else {
+                window?.performDrag(with: event)       // single drag → move the window
+            }
+        }
+    }
+}
+
 struct WindowChromeConfigurator: NSViewRepresentable {
     let colorScheme: ColorScheme?
 
@@ -135,6 +154,12 @@ struct RootView: View {
                 .environmentObject(toolCallStore)
                 .environmentObject(modelCatalog)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        // Title-bar strip: drag to move, double-click to zoom (clear of the traffic lights).
+        .overlay(alignment: .top) {
+            TitleBarBehavior()
+                .frame(height: 28)
+                .padding(.leading, 72)
         }
         .blur(radius: reportPanel.isVisible ? 6 : 0, opaque: false)
         .animation(.easeInOut(duration: 0.28), value: reportPanel.isVisible)
