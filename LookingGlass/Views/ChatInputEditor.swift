@@ -53,13 +53,46 @@ final class SendingTextView: NSTextView {
         super.keyDown(with: event)
     }
 
+    // ⌘V: SwiftUI's Edit-menu Paste doesn't reliably route `paste:` down to an NSTextView
+    // embedded via NSViewRepresentable, so the view never saw the paste. Claim ⌘V at the view
+    // level — views get first crack at key equivalents, before the menu.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "v" {
+            paste(nil)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     override func paste(_ sender: Any?) {
-        let pb = NSPasteboard.general
-        if let image = NSImage(pasteboard: pb) {
+        if let image = Self.image(from: NSPasteboard.general) {
             onImagePaste?(image)
             return   // don't embed as an attachment in the text
         }
         super.paste(sender)
+    }
+
+    // Keep the text view OUT of the drag path — an NSTextView would otherwise claim the drop
+    // region and reject image drags. SwiftUI's `.onDrop` on the input bar handles images instead.
+    override func updateDragTypeRegistration() {
+        unregisterDraggedTypes()
+    }
+
+    /// Read an image from the ⌘V clipboard: a bitmap image object first (screenshots, copied
+    /// images), then an image FILE url (copied from Finder). Drag-drop is handled at the SwiftUI
+    /// layer (`.onDrop` on the input bar) — the NSTextView never receives drag events here.
+    static func image(from pb: NSPasteboard) -> NSImage? {
+        if let images = pb.readObjects(forClasses: [NSImage.self], options: nil) as? [NSImage],
+           let image = images.first {
+            return image
+        }
+        let opts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingContentsConformToTypes: NSImage.imageTypes]
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: opts) as? [URL],
+           let url = urls.first {
+            return NSImage(contentsOf: url)
+        }
+        return nil
     }
 }
 

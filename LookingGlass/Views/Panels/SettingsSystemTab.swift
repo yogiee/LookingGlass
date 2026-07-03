@@ -5,6 +5,7 @@ struct SettingsSystemTab: View {
     @AppStorage("systemPrompt") private var systemPrompt = ""
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
     @AppStorage("appleIntelligenceEnabled") private var appleIntelligenceEnabled = true
+    @AppStorage("ocrPastedImages") private var ocrPastedImages = true
     @AppStorage("filesRoot") private var filesRoot = ""
 
     /// Where independent (non-project) chats save files when no custom path is set.
@@ -27,6 +28,7 @@ struct SettingsSystemTab: View {
             connectionSection
             filesSection
             appleIntelligenceSection
+            imagesSection
             toolsSection
         }
         .formStyle(.grouped)
@@ -156,6 +158,22 @@ struct SettingsSystemTab: View {
                 Text("Not available — enable Apple Intelligence in System Settings, or check that your device is supported.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: Images
+
+    private var imagesSection: some View {
+        Section("Images") {
+            Toggle(isOn: $ocrPastedImages) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Extract text from pasted images")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("When you paste a screenshot or document that's mostly text, read it on-device with Vision and drop the text into the input — instead of describing the image. Instant, private, no model call.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

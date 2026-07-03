@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
 
 @MainActor
 class ChatViewModel: ObservableObject {
@@ -269,6 +271,7 @@ struct ChatView: View {
     @Environment(\.chatLineHeight) private var lineHeight
 
     @AppStorage("selectedModel") private var selectedModel = ""   // "" = Auto (sidecar resolves)
+    @AppStorage("ocrPastedImages") private var ocrPastedImages = true  // paste text-image → OCR, skip VLM
     @AppStorage("userName") private var userName = ""
     @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
@@ -282,6 +285,8 @@ struct ChatView: View {
     @State private var inputFocused = false
     @State private var pendingAttachment: URL?
     @State private var pendingImage: NSImage?
+    @State private var isRecognizingText = false   // brief OCR pass on a freshly pasted image
+    @State private var isDropTargeted = false      // image drag hovering the input bar
 
     private var inputMinHeight: CGFloat { fontSize + 8 }
     private var inputMaxHeight: CGFloat { (fontSize + 8) * 7 }
@@ -399,8 +404,68 @@ struct ChatView: View {
     }
 
     private func handleImagePaste(_ image: NSImage) {
+        // OCR fast-path (WORKSPACE/apple-native/01-imaging-and-vision.md §A): if the paste is
+        // really just text, read it on-device with Vision and drop it into the input — no image
+        // attachment, so no [Image:] marker and no describe_image VLM round-trip. Ambiguous /
+        // non-text images (and the toggle-off case) fall through to the VLM path unchanged.
+        guard ocrPastedImages else { attachForVLM(image); return }
+        withAnimation(.easeInOut(duration: 0.15)) { isRecognizingText = true }
+        Task { @MainActor in
+            defer { withAnimation(.easeInOut(duration: 0.15)) { isRecognizingText = false } }
+            if let result = await VisionTextService.recognizeText(in: image),
+               VisionTextService.isTextDense(result) {
+                let extracted = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                viewModel.inputText += viewModel.inputText.isEmpty ? extracted : "\n\n" + extracted
+                inputController.focus()
+            } else {
+                attachForVLM(image)
+            }
+        }
+    }
+
+    /// Attach the image for the vision model (the pre-OCR behavior): a thumbnail now, and an
+    /// `[Image: path]` marker on send, which the sidecar routes to `describe_image`.
+    private func attachForVLM(_ image: NSImage) {
         pendingImage = image
         pendingAttachment = saveAttachment(image)
+    }
+
+    /// The attach-image button — an NSOpenPanel file picker. The reliable, discoverable way to
+    /// add an image (paste and drag-drop are the shortcuts); routes through the same paste path.
+    private func presentImagePicker() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.prompt = "Attach"
+        panel.message = "Choose an image to attach"
+        if panel.runModal() == .OK, let url = panel.url, let image = NSImage(contentsOf: url) {
+            handleImagePaste(image)
+        }
+    }
+
+    /// SwiftUI drop handler for the input bar. An NSTextView under SwiftUI hosting never receives
+    /// drag events, so drops are handled here (not in the text view) and routed through the same
+    /// paste path (OCR fast-path / VLM attach).
+    private func loadDroppedImage(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        // Image file dragged from Finder → a file URL we load into an NSImage.
+        if provider.canLoadObject(ofClass: URL.self) {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                if let url, let image = NSImage(contentsOf: url) {
+                    Task { @MainActor in handleImagePaste(image) }
+                }
+            }
+            return true
+        }
+        // Raw image content (e.g. dragged from a browser) → image data. (NSImage doesn't conform
+        // to NSItemProviderReading on macOS, so we load Data and build the image ourselves.)
+        _ = provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+            if let data, let image = NSImage(data: data) {
+                Task { @MainActor in handleImagePaste(image) }
+            }
+        }
+        return true
     }
 
     private func saveAttachment(_ image: NSImage) -> URL? {
@@ -526,6 +591,10 @@ struct ChatView: View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             VStack(spacing: 0) {
+                if isRecognizingText {
+                    ocrReadingStrip
+                        .transition(.opacity)
+                }
                 if let img = pendingImage {
                     attachmentStrip(img)
                         .transition(.opacity.combined(with: .move(edge: .top)))
@@ -537,6 +606,14 @@ struct ChatView: View {
             }
             .frame(maxWidth: 960)
             .glassEffect(.regular, in: .rect(cornerRadius: 16, style: .continuous))
+            .onDrop(of: [.image, .fileURL], isTargeted: $isDropTargeted) { providers in
+                loadDroppedImage(providers)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: isDropTargeted ? 2 : 0)
+                    .animation(.easeInOut(duration: 0.12), value: isDropTargeted)
+            )
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
@@ -644,6 +721,18 @@ struct ChatView: View {
 
     private var inputBottomBar: some View {
         HStack(alignment: .center, spacing: 2) {
+            // Attach image — file picker. The reliable, discoverable input path (paste + drag are
+            // shortcuts). Always visible.
+            Button { presentImagePicker() } label: {
+                Image(systemName: "photo.badge.plus")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.secondary.opacity(0.8))
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.isStreaming)
+            .help("Attach an image")
             if inputFocused {
                 FormatButton(icon: "bold", help: "Bold") { inputController.wrap(prefix: "**", suffix: "**") }
                 FormatButton(icon: "italic", help: "Italic") { inputController.wrap(prefix: "*", suffix: "*") }
@@ -689,6 +778,20 @@ struct ChatView: View {
         .padding(.top, 2)
         .padding(.bottom, 8)
         .animation(.easeInOut(duration: 0.16), value: inputFocused)
+    }
+
+    /// Brief inline indicator while a pasted image is being OCR'd (usually well under a second).
+    private var ocrReadingStrip: some View {
+        HStack(spacing: 7) {
+            ProgressView().controlSize(.small)
+            Text("Reading text…")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func attachmentStrip(_ image: NSImage) -> some View {
