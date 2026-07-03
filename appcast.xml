@@ -6,6 +6,27 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.11</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.11 — on-device image tools: OCR, editing, and 4× AI upscale</h3>
+        <ul>
+          <li>Paste text from a screenshot — a picture that's mostly text becomes editable text in the message box, read on-device with Vision (instant, no model call). Pasting, dragging, or attaching images all work now, with an attach button in the input bar.</li>
+          <li>Edit images right in the viewer — resize, crop, and export to PNG/JPEG/HEIF, with a before/after comparison slider.</li>
+          <li>Upscale a generated image 4× on the Neural Engine — a new super-resolution model (RealPLKSR) adds real detail, with a Detail dial to tune it. Downloads a ~30 MB model once.</li>
+          <li>More reliable image generation — the lightweight chat model no longer trips over invalid image-model names.</li>
+        </ul>
+      ]]></description>
+      <pubDate>Sat, 04 Jul 2026 00:13:49 +0530</pubDate>
+      <sparkle:version>22</sparkle:version>
+      <sparkle:shortVersionString>0.8.11</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.11/LookingGlass.dmg"
+        sparkle:edSignature="P6OFH3FW9Pq+xayVtnSX/iy1lrTXH1NxIzq1Ip4oZE7a41LaFnG0eWoCkkv5H57pMQAiFKIQDseAs4I1tFu+Cw=="
+        length="50397499"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.10</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.10 — model picker &amp; launch screen fixes</h3>
