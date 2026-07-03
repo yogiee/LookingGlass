@@ -122,8 +122,11 @@ struct LightboxView: View {
     @State private var resizeMode = false
     @State private var sliderPos: CGFloat = 2.0          // 0…4; evenly-spaced ticks (see below)
     @State private var sharpen = false
+    @State private var compareMode = false               // before/after split view (Slice 2b)
+    @State private var compareFraction: CGFloat = 0.5    // divider position, 0…1 of image width
     @State private var exportFormat: CoreImageService.ExportFormat = .png
     @State private var previewImage: NSImage?            // Core Image-rendered quality preview
+    @State private var baseImage: NSImage?               // the original, loaded once
     @State private var areaSize: CGSize = .zero
     @State private var originalPixelSize: CGSize = .zero
 
@@ -136,7 +139,36 @@ struct LightboxView: View {
     // The bitmap actually drawn (Core Image render when ready, else the original file). LAYOUT
     // (fit/frame/1:1) is driven by `layoutSize`, NOT this bitmap's size — so a slider drag scales
     // the viewport live and the render just upgrades quality in place (no jump).
-    private var image: NSImage? { previewImage ?? NSImage(contentsOfFile: path) }
+    private var image: NSImage? { previewImage ?? baseImage }
+
+    // Image content: normal single image, or the before/after split when comparing.
+    @ViewBuilder private var imageDisplay: some View {
+        if compareMode, let base = baseImage {
+            GeometryReader { g in
+                ZStack {
+                    // Processed result fills the frame (the "after", right of the divider).
+                    Image(nsImage: previewImage ?? base).resizable().interpolation(.high)
+                        .frame(width: g.size.width, height: g.size.height)
+                    // Original revealed left of the divider (the "before").
+                    Image(nsImage: base).resizable().interpolation(.high)
+                        .frame(width: g.size.width, height: g.size.height)
+                        .mask(alignment: .leading) { Rectangle().frame(width: g.size.width * compareFraction) }
+                    // Divider + grab handle.
+                    Rectangle().fill(.white.opacity(0.9)).frame(width: 1.5, height: g.size.height)
+                        .position(x: g.size.width * compareFraction, y: g.size.height / 2)
+                    Image(systemName: "arrow.left.and.right.circle.fill")
+                        .font(.system(size: 22)).foregroundStyle(.white).shadow(radius: 3)
+                        .position(x: g.size.width * compareFraction, y: g.size.height / 2)
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { v in compareFraction = min(max(v.location.x / g.size.width, 0), 1) }
+                        )
+                }
+            }
+        } else if let img = image {
+            Image(nsImage: img).resizable().interpolation(.high)
+        }
+    }
     private var resizeScale: CGFloat {
         let p = min(max(sliderPos, 0), 4)
         let i = min(Int(p), resizeTickScales.count - 2)
@@ -166,10 +198,8 @@ struct LightboxView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { animatedClose() }
 
-                if let image {
-                    Image(nsImage: image)
-                        .resizable()
-                        .interpolation(.high)
+                if image != nil {
+                    imageDisplay
                         .frame(width: layoutSize.width * displayScale,
                                height: layoutSize.height * displayScale)
                         .offset(offset)
@@ -219,6 +249,10 @@ struct LightboxView: View {
                 .padding(18)
                 .opacity(presented ? 1 : 0)
             }
+            // Before/after labels pinned near the top, tracking the divider's on-screen x.
+            .overlay {
+                if compareMode, presented { compareLabels(geo) }
+            }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 10) {
                     if resizeMode {
@@ -233,6 +267,7 @@ struct LightboxView: View {
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { lightboxFrame = $0 }
             .onAppear {
                 areaSize = geo.size
+                baseImage = NSImage(contentsOfFile: path)
                 originalPixelSize = CoreImageService.pixelSize(path: path) ?? .zero
                 fitScale = computeFit(geo.size)
                 startScrollMonitor()
@@ -263,7 +298,7 @@ struct LightboxView: View {
             // live in sync with the slider.
             .onChange(of: sliderPos) { _, _ in refit() }
             .onChange(of: resizeMode) { _, on in
-                if !on { sliderPos = 2.0; sharpen = false }   // reset to 1× on close
+                if !on { sliderPos = 2.0; sharpen = false; compareMode = false }   // reset on close
                 refit()
             }
         }
@@ -408,6 +443,14 @@ struct LightboxView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 150, alignment: .leading)
             Toggle("Sharpen", isOn: $sharpen).toggleStyle(.checkbox)
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { compareMode.toggle() }
+            } label: {
+                Image(systemName: "rectangle.split.2x1")
+                    .foregroundStyle(compareMode ? Color.accentColor : Color.primary)
+            }
+            .buttonStyle(.plain)
+            .help("Compare before / after")
             Picker("", selection: $exportFormat) {
                 ForEach(CoreImageService.ExportFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
@@ -457,6 +500,26 @@ struct LightboxView: View {
 
     // Fill the available window area (minus padding for the toolbar + close button),
     // so the image occupies ~95% of the height. The 1:1 button steps to native.
+    /// Before/After pills near the top, positioned to the divider's on-screen x (derived from the
+    /// image frame's pan/zoom) so they follow the divider. Non-interactive.
+    private func compareLabels(_ geo: GeometryProxy) -> some View {
+        let frameW = layoutSize.width * displayScale
+        let dx = geo.size.width / 2 + offset.width + (compareFraction - 0.5) * frameW
+        return ZStack(alignment: .topLeading) {
+            compareLabel("Before").position(x: min(max(dx - 46, 44), geo.size.width - 44), y: 46)
+            compareLabel("After").position(x: min(max(dx + 42, 44), geo.size.width - 44), y: 46)
+        }
+        .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+        .allowsHitTesting(false)
+    }
+    private func compareLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(.black.opacity(0.55), in: Capsule())
+    }
+
     private func computeFit(_ area: CGSize) -> CGFloat {
         let sz = layoutSize
         guard sz.width > 0, sz.height > 0, area.width > 80, area.height > 140 else { return 1 }
