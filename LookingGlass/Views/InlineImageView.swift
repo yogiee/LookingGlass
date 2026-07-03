@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// Extracts on-disk image file paths from a message so they can be rendered
 /// inline. Two sources:
@@ -117,10 +118,41 @@ struct LightboxView: View {
     @State private var presented = false
     @State private var lightboxFrame: CGRect = .zero
 
+    // Resize mode (Core Image editing) — Slice 2a.
+    @State private var resizeMode = false
+    @State private var sliderPos: CGFloat = 2.0          // 0…4; evenly-spaced ticks (see below)
+    @State private var sharpen = false
+    @State private var exportFormat: CoreImageService.ExportFormat = .png
+    @State private var previewImage: NSImage?            // Core Image-rendered quality preview
+    @State private var areaSize: CGSize = .zero
+    @State private var originalPixelSize: CGSize = .zero
+
     private let minZoom: CGFloat = 0.1
     private let maxZoom: CGFloat = 16.0
+    // Slider is a 0…4 position with EVEN ticks mapping to these scales (position 2 = 1×, center).
+    private let resizeTickScales: [CGFloat] = [0.5, 2.0/3.0, 1.0, 1.5, 2.0]
+    private let resizeTickLabels = ["½×", "⅔×", "1×", "1.5×", "2×"]
 
-    private var image: NSImage? { NSImage(contentsOfFile: path) }
+    // The bitmap actually drawn (Core Image render when ready, else the original file). LAYOUT
+    // (fit/frame/1:1) is driven by `layoutSize`, NOT this bitmap's size — so a slider drag scales
+    // the viewport live and the render just upgrades quality in place (no jump).
+    private var image: NSImage? { previewImage ?? NSImage(contentsOfFile: path) }
+    private var resizeScale: CGFloat {
+        let p = min(max(sliderPos, 0), 4)
+        let i = min(Int(p), resizeTickScales.count - 2)
+        let f = p - CGFloat(i)
+        return resizeTickScales[i] + f * (resizeTickScales[i + 1] - resizeTickScales[i])
+    }
+    /// Target on-screen dimensions — original × resize factor while editing. Drives fit/framing so
+    /// the viewport scales in sync with the slider before the quality render lands.
+    private var layoutSize: CGSize {
+        if resizeMode, originalPixelSize != .zero {
+            return CGSize(width: originalPixelSize.width * resizeScale,
+                          height: originalPixelSize.height * resizeScale)
+        }
+        return image?.size ?? .zero
+    }
+    private var previewKey: String { "\(resizeMode)_\(sliderPos)_\(sharpen)" }
     private var displayScale: CGFloat { fitScale * zoom }
     private var isZoomed: Bool { zoom > 1.0001 }
 
@@ -138,8 +170,8 @@ struct LightboxView: View {
                     Image(nsImage: image)
                         .resizable()
                         .interpolation(.high)
-                        .frame(width: image.size.width * displayScale,
-                               height: image.size.height * displayScale)
+                        .frame(width: layoutSize.width * displayScale,
+                               height: layoutSize.height * displayScale)
                         .offset(offset)
                         // Hero: on open, grow from the thumbnail's on-screen frame to
                         // centered-fit; on close, shrink back. Only when at fit zoom.
@@ -188,10 +220,20 @@ struct LightboxView: View {
                 .opacity(presented ? 1 : 0)
             }
             .overlay(alignment: .bottom) {
-                toolbar.padding(.bottom, 22).opacity(presented ? 1 : 0)
+                VStack(spacing: 10) {
+                    if resizeMode {
+                        resizeControls
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                    toolbar
+                }
+                .padding(.bottom, 22)
+                .opacity(presented ? 1 : 0)
             }
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { lightboxFrame = $0 }
             .onAppear {
+                areaSize = geo.size
+                originalPixelSize = CoreImageService.pixelSize(path: path) ?? .zero
                 fitScale = computeFit(geo.size)
                 startScrollMonitor()
                 // Defer so fitScale + lightboxFrame settle before measuring the hero
@@ -201,8 +243,29 @@ struct LightboxView: View {
                 }
             }
             .onDisappear { stopScrollMonitor(); popCursor() }
-            .onChange(of: geo.size) { _, s in fitScale = computeFit(s) }
+            .onChange(of: geo.size) { _, s in areaSize = s; fitScale = computeFit(s) }
             .onChange(of: isZoomed) { _, zoomed in if !zoomed { popCursor() } }
+            // Re-render the Core Image preview when the resize params change (debounced, off-main),
+            // so 1:1 shows the real output pixels. Cleared when resize is a no-op.
+            // Debounced Core Image quality render — swaps the bitmap in place (layout unchanged).
+            .task(id: previewKey) {
+                guard resizeMode, resizeScale != 1.0 || sharpen else { previewImage = nil; return }
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                let p = path, s = resizeScale, sh = sharpen
+                let rendered = await Task.detached { CoreImageService.preview(path: p, scale: s, sharpen: sh) }.value
+                guard !Task.isCancelled else { return }
+                previewImage = rendered
+            }
+            // Slider → scale. Click (no drag) jump-snaps to the nearest tick; a drag is fine-grained
+            // and snaps only when it lands near a tick. refit() rescales the viewport live in sync.
+            // Snap is handled in the slider's binding setter; here we just rescale the viewport
+            // live in sync with the slider.
+            .onChange(of: sliderPos) { _, _ in refit() }
+            .onChange(of: resizeMode) { _, on in
+                if !on { sliderPos = 2.0; sharpen = false }   // reset to 1× on close
+                refit()
+            }
         }
         .ignoresSafeArea()
         // Keyboard shortcuts (hidden buttons register them while the lightbox is up).
@@ -295,6 +358,13 @@ struct LightboxView: View {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
             } label: { Image(systemName: "folder") }
                 .help("Reveal in Finder")
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { resizeMode.toggle() }
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .foregroundStyle(resizeMode ? Color.accentColor : Color.primary)
+            }
+            .help("Resize & export")
         }
         .buttonStyle(.borderless)
         .font(.system(size: 13))
@@ -304,14 +374,108 @@ struct LightboxView: View {
         .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
     }
 
+    // Resize control row (Slice 2a): ½×…2× snap-slider with ticks · dimensions+scale · sharpen ·
+    // format · Export.
+    private var resizeControls: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "photo").foregroundStyle(.secondary)
+            VStack(spacing: 2) {
+                Slider(
+                    value: Binding(
+                        get: { sliderPos },
+                        set: { v in
+                            // Continuous; snap only when it lands near a tick.
+                            let r = v.rounded()
+                            sliderPos = abs(v - r) < 0.12 ? r : v
+                        }
+                    ),
+                    in: 0...4
+                )
+                .frame(width: 210)
+                // Tick labels aligned to the thumb stops (offset for the knob inset).
+                GeometryReader { g in
+                    let inset: CGFloat = 11
+                    ForEach(0..<resizeTickLabels.count, id: \.self) { i in
+                        Text(resizeTickLabels[i])
+                            .font(.system(size: 9)).foregroundStyle(.secondary).fixedSize()
+                            .position(x: inset + (g.size.width - inset * 2) * CGFloat(i) / 4, y: 5)
+                    }
+                }
+                .frame(width: 210, height: 11)
+            }
+            Text(dimensionsText)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 150, alignment: .leading)
+            Toggle("Sharpen", isOn: $sharpen).toggleStyle(.checkbox)
+            Picker("", selection: $exportFormat) {
+                ForEach(CoreImageService.ExportFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .labelsHidden()
+            .frame(width: 84)
+            Button("Export…") { exportImage() }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
+    }
+
+    private var dimensionsText: String {
+        guard originalPixelSize != .zero else { return "" }
+        let w = Int((originalPixelSize.width * resizeScale).rounded())
+        let h = Int((originalPixelSize.height * resizeScale).rounded())
+        return "\(w) × \(h)  (\(scaleLabel))"
+    }
+    private var scaleLabel: String {
+        let r = sliderPos.rounded()
+        if abs(sliderPos - r) < 0.001, let i = Int(exactly: r), resizeTickLabels.indices.contains(i) {
+            return resizeTickLabels[i]
+        }
+        return String(format: "%.2f×", resizeScale)
+    }
+
+    private func exportImage() {
+        let ext: String
+        switch exportFormat {
+        case .png:  ext = "png"
+        case .jpeg: ext = "jpg"
+        case .heif: ext = "heic"
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: ext) ?? .png]
+        panel.canCreateDirectories = true
+        let base = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        let w = Int((originalPixelSize.width * resizeScale).rounded())
+        panel.nameFieldStringValue = "\(base)_\(w)px.\(ext)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        CoreImageService.export(path: path, scale: resizeScale, sharpen: sharpen, as: exportFormat, to: url)
+    }
+
     // Fill the available window area (minus padding for the toolbar + close button),
     // so the image occupies ~95% of the height. The 1:1 button steps to native.
     private func computeFit(_ area: CGSize) -> CGFloat {
-        guard let image, image.size.width > 0, image.size.height > 0,
-              area.width > 80, area.height > 140 else { return 1 }
+        let sz = layoutSize
+        guard sz.width > 0, sz.height > 0, area.width > 80, area.height > 140 else { return 1 }
         let availW = area.width - 64
         let availH = area.height - 130
-        return min(availW / image.size.width, availH / image.size.height)
+        return min(availW / sz.width, availH / sz.height)
+    }
+
+    /// Recompute the fit scale for the current (possibly resized) image. If the viewer was at
+    /// 1:1 (displayScale ≈ 1.0), re-pin to 1:1 so the resized image stays at actual pixels
+    /// without a manual click; "fit" and other zoom levels keep their multiplier.
+    private func refit() {
+        let wasOneToOne = abs(fitScale * zoom - 1.0) < 0.02
+        let newFit = computeFit(areaSize)
+        fitScale = newFit
+        if wasOneToOne, newFit > 0 {
+            zoom = 1.0 / newFit
+            lastZoom = zoom
+        }
     }
 
     private func setZoom(_ value: CGFloat) {
