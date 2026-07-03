@@ -16,11 +16,24 @@ enum CoreImageService {
 
     enum ExportFormat: String, CaseIterable { case png = "PNG", jpeg = "JPEG", heif = "HEIF" }
 
-    /// Lanczos-scale an image on disk (scale 1.0 = no-op; <1 downscale; >1 upscale), then an
-    /// optional light luminance sharpen. Returns the processed CIImage (cropped to integral extent).
-    private static func process(path: String, scale: CGFloat, sharpen: Bool) -> CIImage? {
+    /// Full-image crop rect (a no-op default).
+    static let fullCrop = CGRect(x: 0, y: 0, width: 1, height: 1)
+
+    /// Crop (normalized, top-left origin) → Lanczos scale → optional light luminance sharpen.
+    /// Returns the processed CIImage (cropped to integral extent).
+    private static func process(path: String, crop: CGRect, scale: CGFloat, sharpen: Bool) -> CIImage? {
         guard let src = CIImage(contentsOf: URL(fileURLWithPath: path)) else { return nil }
         var img = src
+        // Crop first. The UI rect is normalized with a TOP-left origin; CIImage is bottom-left, so
+        // flip Y. Re-origin to (0,0) after cropping so the downstream scale/export is clean.
+        if crop != fullCrop {
+            let e = src.extent
+            let px = CGRect(x: e.minX + crop.minX * e.width,
+                            y: e.minY + (1 - crop.maxY) * e.height,
+                            width: crop.width * e.width,
+                            height: crop.height * e.height).integral
+            img = img.cropped(to: px).transformed(by: CGAffineTransform(translationX: -px.minX, y: -px.minY))
+        }
         if abs(scale - 1) > 0.001 {
             let f = CIFilter(name: "CILanczosScaleTransform")!
             f.setValue(img, forKey: kCIInputImageKey)
@@ -43,17 +56,17 @@ enum CoreImageService {
     }
 
     /// A preview NSImage of the processed result — for live display in the lightbox while resizing.
-    static func preview(path: String, scale: CGFloat, sharpen: Bool) -> NSImage? {
-        guard let ci = process(path: path, scale: scale, sharpen: sharpen),
+    static func preview(path: String, crop: CGRect = fullCrop, scale: CGFloat, sharpen: Bool) -> NSImage? {
+        guard let ci = process(path: path, crop: crop, scale: scale, sharpen: sharpen),
               let cg = context.createCGImage(ci, from: ci.extent) else { return nil }
         return NSImage(cgImage: cg, size: ci.extent.size)
     }
 
     /// Export the processed result to a new file (the original is never touched).
     @discardableResult
-    static func export(path: String, scale: CGFloat, sharpen: Bool,
+    static func export(path: String, crop: CGRect = fullCrop, scale: CGFloat, sharpen: Bool,
                        as format: ExportFormat, to url: URL) -> Bool {
-        guard let ci = process(path: path, scale: scale, sharpen: sharpen) else { return false }
+        guard let ci = process(path: path, crop: crop, scale: scale, sharpen: sharpen) else { return false }
         // Highest quality — no additional compression beyond each format's nature. PNG is lossless;
         // JPEG/HEIF get an explicit 1.0 (Yogi's call: don't re-compress exports). The empty-options
         // defaults were an uncontrolled ~0.9 (JPEG) / ~0.8 (HEIF) — now pinned.

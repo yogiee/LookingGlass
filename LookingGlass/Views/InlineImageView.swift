@@ -124,6 +124,10 @@ struct LightboxView: View {
     @State private var sharpen = false
     @State private var compareMode = false               // before/after split view (Slice 2b)
     @State private var compareFraction: CGFloat = 0.5    // divider position, 0…1 of image width
+    @State private var cropMode = false                  // crop overlay (Slice 2c)
+    @State private var cropRect = CoreImageService.fullCrop   // normalized, top-left origin
+    @State private var cropStart = CGRect.zero
+    @State private var cropDragging = false
     @State private var exportFormat: CoreImageService.ExportFormat = .png
     @State private var previewImage: NSImage?            // Core Image-rendered quality preview
     @State private var baseImage: NSImage?               // the original, loaded once
@@ -135,15 +139,31 @@ struct LightboxView: View {
     // Slider is a 0…4 position with EVEN ticks mapping to these scales (position 2 = 1×, center).
     private let resizeTickScales: [CGFloat] = [0.5, 2.0/3.0, 1.0, 1.5, 2.0]
     private let resizeTickLabels = ["½×", "⅔×", "1×", "1.5×", "2×"]
+    // Crop handles: fx/fy = position within the crop rect (0/0.5/1); h/v = the edges each moves.
+    private enum HEdge { case none, left, right }
+    private enum VEdge { case none, top, bottom }
+    private let cropHandles: [(id: Int, fx: CGFloat, fy: CGFloat, h: HEdge, v: VEdge)] = [
+        (0, 0, 0, .left, .top),    (1, 0.5, 0, .none, .top),    (2, 1, 0, .right, .top),
+        (3, 0, 0.5, .left, .none),                              (4, 1, 0.5, .right, .none),
+        (5, 0, 1, .left, .bottom), (6, 0.5, 1, .none, .bottom), (7, 1, 1, .right, .bottom),
+    ]
 
     // The bitmap actually drawn (Core Image render when ready, else the original file). LAYOUT
     // (fit/frame/1:1) is driven by `layoutSize`, NOT this bitmap's size — so a slider drag scales
     // the viewport live and the render just upgrades quality in place (no jump).
     private var image: NSImage? { previewImage ?? baseImage }
 
-    // Image content: normal single image, or the before/after split when comparing.
+    // Image content: normal single image, the before/after split, or the crop overlay.
     @ViewBuilder private var imageDisplay: some View {
-        if compareMode, let base = baseImage {
+        if cropMode, let base = baseImage {
+            GeometryReader { g in
+                ZStack {
+                    Image(nsImage: base).resizable().interpolation(.high)
+                        .frame(width: g.size.width, height: g.size.height)
+                    cropOverlay(g.size)
+                }
+            }
+        } else if compareMode, let base = baseImage {
             GeometryReader { g in
                 ZStack {
                     // Processed result fills the frame (the "after", right of the divider).
@@ -178,13 +198,14 @@ struct LightboxView: View {
     /// Target on-screen dimensions — original × resize factor while editing. Drives fit/framing so
     /// the viewport scales in sync with the slider before the quality render lands.
     private var layoutSize: CGSize {
+        if cropMode, originalPixelSize != .zero { return originalPixelSize }   // crop maps to original, at fit
         if resizeMode, originalPixelSize != .zero {
             return CGSize(width: originalPixelSize.width * resizeScale,
                           height: originalPixelSize.height * resizeScale)
         }
         return image?.size ?? .zero
     }
-    private var previewKey: String { "\(resizeMode)_\(sliderPos)_\(sharpen)" }
+    private var previewKey: String { "\(resizeMode)_\(cropMode)_\(sliderPos)_\(sharpen)" }
     private var displayScale: CGFloat { fitScale * zoom }
     private var isZoomed: Bool { zoom > 1.0001 }
 
@@ -224,7 +245,7 @@ struct LightboxView: View {
                         )
                         .simultaneousGesture(
                             MagnificationGesture()
-                                .onChanged { v in zoom = clamp(lastZoom * v) }
+                                .onChanged { v in guard !cropMode else { return }; zoom = clamp(lastZoom * v) }
                                 .onEnded { _ in lastZoom = zoom; if !isZoomed { resetPan() } }
                         )
                         .onHover { inside in updateCursor(hovering: inside) }
@@ -284,7 +305,7 @@ struct LightboxView: View {
             // so 1:1 shows the real output pixels. Cleared when resize is a no-op.
             // Debounced Core Image quality render — swaps the bitmap in place (layout unchanged).
             .task(id: previewKey) {
-                guard resizeMode, resizeScale != 1.0 || sharpen else { previewImage = nil; return }
+                guard resizeMode, !cropMode, resizeScale != 1.0 || sharpen else { previewImage = nil; return }
                 try? await Task.sleep(for: .milliseconds(120))
                 guard !Task.isCancelled else { return }
                 let p = path, s = resizeScale, sh = sharpen
@@ -298,8 +319,21 @@ struct LightboxView: View {
             // live in sync with the slider.
             .onChange(of: sliderPos) { _, _ in refit() }
             .onChange(of: resizeMode) { _, on in
-                if !on { sliderPos = 2.0; sharpen = false; compareMode = false }   // reset on close
+                if !on { sliderPos = 2.0; sharpen = false; compareMode = false; cropMode = false }
                 refit()
+            }
+            .onChange(of: cropMode) { _, on in
+                if on {
+                    compareMode = false
+                    cropRect = CGRect(x: 0.08, y: 0.08, width: 0.84, height: 0.84)   // start slightly inset
+                    zoom = 1; lastZoom = 1; offset = .zero; lastOffset = .zero        // fit, no pan
+                } else {
+                    cropRect = CoreImageService.fullCrop
+                }
+                refit()
+            }
+            .onChange(of: compareMode) { _, on in
+                if on { cropMode = false }
             }
         }
         .ignoresSafeArea()
@@ -355,7 +389,7 @@ struct LightboxView: View {
     // CMD + scroll to zoom (Mac-native). Local monitor lives only while shown.
     private func startScrollMonitor() {
         scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
-            guard event.modifierFlags.contains(.command) else { return event }
+            guard !cropMode, event.modifierFlags.contains(.command) else { return event }
             let delta = event.scrollingDeltaY
             if delta != 0 {
                 setZoom(zoom * (1 + delta * 0.01))
@@ -451,6 +485,14 @@ struct LightboxView: View {
             }
             .buttonStyle(.plain)
             .help("Compare before / after")
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { cropMode.toggle() }
+            } label: {
+                Image(systemName: "crop")
+                    .foregroundStyle(cropMode ? Color.accentColor : Color.primary)
+            }
+            .buttonStyle(.plain)
+            .help("Crop")
             Picker("", selection: $exportFormat) {
                 ForEach(CoreImageService.ExportFormat.allCases, id: \.self) { Text($0.rawValue).tag($0) }
             }
@@ -469,8 +511,9 @@ struct LightboxView: View {
 
     private var dimensionsText: String {
         guard originalPixelSize != .zero else { return "" }
-        let w = Int((originalPixelSize.width * resizeScale).rounded())
-        let h = Int((originalPixelSize.height * resizeScale).rounded())
+        // cropRect defaults to full (1×1), so this is a no-op when not cropping.
+        let w = Int((originalPixelSize.width * cropRect.width * resizeScale).rounded())
+        let h = Int((originalPixelSize.height * cropRect.height * resizeScale).rounded())
         return "\(w) × \(h)  (\(scaleLabel))"
     }
     private var scaleLabel: String {
@@ -495,11 +538,74 @@ struct LightboxView: View {
         let w = Int((originalPixelSize.width * resizeScale).rounded())
         panel.nameFieldStringValue = "\(base)_\(w)px.\(ext)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        CoreImageService.export(path: path, scale: resizeScale, sharpen: sharpen, as: exportFormat, to: url)
+        CoreImageService.export(path: path, crop: cropRect, scale: resizeScale, sharpen: sharpen, as: exportFormat, to: url)
     }
 
     // Fill the available window area (minus padding for the toolbar + close button),
     // so the image occupies ~95% of the height. The 1:1 button steps to native.
+    // MARK: Crop overlay (Slice 2c)
+
+    private func cropOverlay(_ size: CGSize) -> some View {
+        let r = CGRect(x: cropRect.minX * size.width, y: cropRect.minY * size.height,
+                       width: cropRect.width * size.width, height: cropRect.height * size.height)
+        return ZStack(alignment: .topLeading) {
+            // Dim everything outside the crop (even-odd fill of frame minus crop).
+            Path { p in p.addRect(CGRect(origin: .zero, size: size)); p.addRect(r) }
+                .fill(.black.opacity(0.5), style: FillStyle(eoFill: true))
+                .allowsHitTesting(false)
+            // Border.
+            Rectangle().stroke(.white.opacity(0.9), lineWidth: 1)
+                .frame(width: r.width, height: r.height).position(x: r.midX, y: r.midY)
+                .allowsHitTesting(false)
+            // Interior — drag to move.
+            Color.clear.contentShape(Rectangle())
+                .frame(width: r.width, height: r.height).position(x: r.midX, y: r.midY)
+                .gesture(cropDrag { moveCrop($0, size) })
+            // 8 handles — drag to resize the corresponding edges.
+            ForEach(cropHandles, id: \.id) { hd in
+                cropHandleView()
+                    .position(x: r.minX + hd.fx * r.width, y: r.minY + hd.fy * r.height)
+                    .gesture(cropDrag { applyCropDrag(hd.h, hd.v, $0, size) })
+            }
+        }
+        .frame(width: size.width, height: size.height)
+    }
+
+    private func cropHandleView() -> some View {
+        Circle().fill(.white)
+            .overlay(Circle().stroke(.black.opacity(0.4), lineWidth: 0.5))
+            .frame(width: 12, height: 12)
+            .shadow(radius: 1)
+            .frame(width: 30, height: 30)          // larger hit target
+            .contentShape(Rectangle())
+    }
+
+    private func cropDrag(_ apply: @escaping (CGSize) -> Void) -> some Gesture {
+        DragGesture()
+            .onChanged { v in
+                if !cropDragging { cropDragging = true; cropStart = cropRect }
+                apply(v.translation)
+            }
+            .onEnded { _ in cropDragging = false }
+    }
+
+    private func applyCropDrag(_ h: HEdge, _ v: VEdge, _ t: CGSize, _ size: CGSize) {
+        let minSize: CGFloat = 0.05
+        var left = cropStart.minX, top = cropStart.minY, right = cropStart.maxX, bottom = cropStart.maxY
+        let dx = t.width / size.width, dy = t.height / size.height
+        if h == .left  { left   = min(max(left + dx, 0), right - minSize) }
+        if h == .right { right  = max(min(right + dx, 1), left + minSize) }
+        if v == .top    { top    = min(max(top + dy, 0), bottom - minSize) }
+        if v == .bottom { bottom = max(min(bottom + dy, 1), top + minSize) }
+        cropRect = CGRect(x: left, y: top, width: right - left, height: bottom - top)
+    }
+
+    private func moveCrop(_ t: CGSize, _ size: CGSize) {
+        let x = min(max(cropStart.minX + t.width / size.width, 0), 1 - cropStart.width)
+        let y = min(max(cropStart.minY + t.height / size.height, 0), 1 - cropStart.height)
+        cropRect = CGRect(x: x, y: y, width: cropStart.width, height: cropStart.height)
+    }
+
     /// Before/After pills near the top, positioned to the divider's on-screen x (derived from the
     /// image frame's pan/zoom) so they follow the divider. Non-interactive.
     private func compareLabels(_ geo: GeometryProxy) -> some View {
@@ -542,6 +648,7 @@ struct LightboxView: View {
     }
 
     private func setZoom(_ value: CGFloat) {
+        guard !cropMode else { return }   // pan/zoom off while cropping (image sits at fit)
         zoom = clamp(value)
         lastZoom = zoom
         if !isZoomed { resetPan() }
