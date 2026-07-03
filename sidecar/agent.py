@@ -15,7 +15,7 @@ from project import (
     read_guidelines,
     read_memory_index,
 )
-from router import classify_mode
+from router import classify_mode, detect_image_request
 from skill_loader import skills_index
 from tools.context import (
     ollama_host as _ctx_ollama_host,
@@ -106,6 +106,21 @@ def _sanitize_tool_args(tool, args: dict) -> dict:
     return args
 
 
+def _find_image_tool(registry: "ToolRegistry", enabled: list[str] | None) -> str | None:
+    """Registry name of the enabled image-generation tool, identified by its signature (a
+    `prompt` + an `output_dir` param) rather than a hard-coded name — so it works whatever the
+    MCP server prefix is (e.g. `OllamaMCP__local_image`). None if absent/disabled."""
+    names = enabled if enabled is not None else registry.names()
+    for name in names:
+        tool = registry.get(name)
+        if tool is None:
+            continue
+        props = (tool.parameters or {}).get("properties", {})
+        if "output_dir" in props and "prompt" in props:
+            return name
+    return None
+
+
 async def _silent_hands_stream(
     client: httpx.AsyncClient,
     host: str,
@@ -117,6 +132,7 @@ async def _silent_hands_stream(
     tool_schemas: list[dict],
     registry: "ToolRegistry",
     config: "AgentConfig",
+    preset_call: dict | None = None,
 ) -> AsyncIterator[dict]:
     """Silent-hands butler turn for a tool-less voice model (e.g. ZINI).
 
@@ -127,6 +143,11 @@ async def _silent_hands_stream(
     the hands model's prose; see WORKSPACE/alice-hybrid-architecture.md "plate, not
     re-cook"). If the hands model calls no tools, no findings are injected and the
     voice model just answers directly — the normal pure-chat path.
+
+    `preset_call = {"tool": name, "args": {...}}` short-circuits Phase 1: the tool is
+    executed DIRECTLY (no hands model decides — deterministic routing, e.g. image-gen the
+    router already recognized), then the voice model plates the result exactly as it would
+    the hands model's findings. This keeps the RAM-heavy hands model off that path entirely.
     """
     MAX_OLLAMA_RETRIES = 3
     total_in = 0
@@ -138,7 +159,39 @@ async def _silent_hands_stream(
     hands_history: list[dict] = [{"role": "system", "content": _HANDS_SYSTEM}] + list(messages)
     findings: list[tuple[str, bool, str]] = []  # (tool, success, result)
 
-    for turn in range(config.max_turns):
+    # ── Phase 1a: deterministic routing — execute a pre-decided tool call, no hands model.
+    if preset_call is not None:
+        name = preset_call["tool"]
+        tool = registry.get(name)
+        # Retry a few times on failure: the z-image VAE decode panic is intermittent (an
+        # upstream Ollama bug — see gotcha_zimage_turbo_vae_panic_500). This reproduces the
+        # useful retry the hands model used to provide, minus the flail. Args are re-sanitized
+        # each attempt (forces our output dir + drops any stray model=/size — Fix A).
+        MAX_IMG_ATTEMPTS = 3
+        last_success, last_raw = False, ""
+        for attempt in range(MAX_IMG_ATTEMPTS):
+            args = _sanitize_tool_args(tool, dict(preset_call.get("args", {})))
+            tc_id = f"tc_route_{attempt}"
+            yield {"type": "tool_call_start", "id": tc_id, "tool": name, "args": args}
+            start = time.monotonic()
+            if tool is None:
+                result = {"success": False, "result": f"Unknown tool: {name}"}
+            else:
+                try:
+                    result = await tool.handler(args)
+                except Exception as e:
+                    result = {"success": False, "result": f"{type(e).__name__}: {e}"}
+            latency_ms = int((time.monotonic() - start) * 1000)
+            last_success = result.get("success", False)
+            last_raw = result.get("result", "")
+            yield {"type": "tool_call_result", "id": tc_id, "tool": name,
+                   "success": last_success, "result": last_raw, "latency_ms": latency_ms}
+            if last_success:
+                break
+        findings.append((name, last_success, last_raw))
+        print(f"[agent:route] deterministic {name} → {'ok' if last_success else 'failed'}")
+
+    for turn in range(0 if preset_call is not None else config.max_turns):
         payload = {
             "model": hands_model,
             "messages": hands_history,
@@ -271,15 +324,28 @@ async def _silent_hands_stream(
                 lines.append(_FAIL_RULES)
         lines.append("")
         for name, success, res in findings:
-            status = "OK" if success else "FAILED"
             snippet = (res or "").strip()
+            # A successful image result is an already-rendered file path. Weak voice models
+            # ECHO whatever's in the context, so feeding them the path + tool name makes them
+            # paste it verbatim. Give them a name/path-free note instead — the image itself is
+            # shown to the user via the tool_call_result event, independent of this text.
+            ext = snippet.rsplit(".", 1)[-1].lower() if "." in snippet else ""
+            if success and ext in ("png", "jpg", "jpeg", "webp", "heic", "gif"):
+                lines.append("An image was just generated for the user and is already displayed "
+                             "to them inline, right below your reply. The generation succeeded.")
+                continue
+            status = "OK" if success else "FAILED"
             if len(snippet) > 600:
                 snippet = snippet[:600] + "…"
             lines.append(f"- `{name}` → {status}: {snippet}")
         lines.append("")
         lines.append(
-            "If a succeeded result is an image file path, that image is shown to the user "
-            "inline automatically — acknowledge it and briefly describe what was made."
+            "If a tool result above says an image was created: an image WAS successfully "
+            "generated for the user and is ALREADY shown to them inline. Do NOT say you're a "
+            "text-only assistant or that you can't make images — you just did, through your "
+            "tools. Warmly confirm you made it and describe what's in it in a sentence or two, "
+            "in your own voice. Do NOT print any file path, tool name, `[Image: …]` placeholder, "
+            "or technical/format note — the image is inserted for you."
         )
         voice_system = active_prompt + "\n\n---\n\n" + "\n".join(lines)
     else:
@@ -558,21 +624,40 @@ async def chat_stream(
                     project_model_for_mode(project_cfg, config.models, "hands")
                     or project_model_for_mode(project_cfg, config.models, "coding")
                 )
-                if (
-                    hands_model
+                # Deterministic image routing (A): a clear "make me an image" turn — which the
+                # keyword router doesn't catch, so it lands here on the tool-less voice model —
+                # executes the image tool DIRECTLY (no small model decides which tool or fills
+                # model=), then the voice model plates. Works even with no hands model, and keeps
+                # the RAM-heavy hands model off the image-gen path. See plan_hands_model_reliability.
+                preset_call = None
+                img = detect_image_request(messages)
+                if img:
+                    img_tool = _find_image_tool(registry, effective_tools)
+                    if img_tool:
+                        preset_call = {"tool": img_tool,
+                                       "args": {"prompt": img["prompt"], "mode": img["mode"]}}
+
+                hands_ok = (
+                    bool(hands_model)
                     and hands_model != resolved_model
                     and await _model_supports_tools(client, host, hands_model)
-                ):
-                    print(f"[agent] silent-hands: {hands_model} runs tools → {resolved_model} plates")
+                )
+                if preset_call is not None or hands_ok:
+                    if preset_call is not None:
+                        print(f"[agent:route] image request → direct {preset_call['tool']} "
+                              f"(mode={img['mode']}) → {resolved_model} plates")
+                    else:
+                        print(f"[agent] silent-hands: {hands_model} runs tools → {resolved_model} plates")
                     async for ev in _silent_hands_stream(
                         client, host,
-                        hands_model=hands_model,
+                        hands_model=hands_model or resolved_model,
                         voice_model=resolved_model,
                         active_prompt=active_prompt,
                         messages=messages,
                         tool_schemas=tool_schemas,
                         registry=registry,
                         config=config,
+                        preset_call=preset_call,
                     ):
                         yield ev
                     return

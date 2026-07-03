@@ -43,13 +43,77 @@ _TOOL_NEED = re.compile(
 )
 
 
-def classify_mode(messages: list[dict]) -> str:
-    """Return the routing mode for this conversation turn."""
-    text = ""
+# ── Deterministic image-generation routing (2026-07-04) ──────────────────────────────
+# A clear "make me an image" turn is handled by executing the image tool DIRECTLY — no small
+# model gets to decide. The intent is recognizable, and the message IS the prompt. This pulls
+# the most common + most RAM-heavy tool off the weak silent-hands path, where a 3B hands model
+# both mis-decided (0 tool calls) and hallucinated a bad model= arg. Tuned for PRECISION: a
+# miss just falls through to normal routing, but a false-positive wastes a ~2-min generation —
+# so we require an imperative create-verb + an image noun + a subject marker, and reject
+# questions. See plan_hands_model_reliability / feature_silent_hands_butler.
+_IMG_VERB = (
+    r"(?:generate|create|make|draw|render|paint|design|produce|sketch|illustrate|"
+    r"give me|show me|get me|whip up|cook up|conjure)"
+)
+_IMG_NOUN = (
+    r"(?:images?|pictures?|photos?|photographs?|artworks?|art|illustrations?|drawings?|"
+    r"paintings?|renders?|renderings?|logos?|posters?|wallpapers?|portraits?|graphics?|"
+    r"icons?|stickers?|avatars?|mockups?|banners?|sketches?|scenes?)"
+)
+# Subject marker after the noun ("… image OF a fox") — the discriminator that keeps
+# "make sure the image loads" / "generate a report about images" from matching.
+_IMG_SUBJECT = r"(?:of|showing|depicting|with|that (?:says|shows|depicts)|featuring|for|:|,|-|—)"
+_IMAGE_REQ = re.compile(
+    rf"\b{_IMG_VERB}\s+(?:me\s+)?(?:an?|some|a few|a couple of|the|another|new|\d+)?\s*"
+    rf"(?:\w+\s+){{0,2}}?{_IMG_NOUN}\s+{_IMG_SUBJECT}\b",
+    re.IGNORECASE,
+)
+# Reject questions/explanations up front ("how do I generate an image of …").
+_IMAGE_Q = re.compile(
+    r"^\s*(?:how|what|whats|what's|why|which|who|whom|whose|when|where|is|are|do|does|"
+    r"did|should|could you (?:explain|tell)|can you (?:explain|tell|describe)|"
+    r"tell me about|explain|describe how)\b",
+    re.IGNORECASE,
+)
+# mode="design" → text-in-image / logos / UI / posters; else "photo" (see OllamaMCP local_image).
+_IMG_DESIGN = re.compile(
+    r"\b(logos?|posters?|text|signs?|signage|banners?|ui|mockups?|interfaces?|diagrams?|"
+    r"icons?|illustrations?|stickers?|comics?|memes?|infographics?|flyers?|cards?|covers?|"
+    r"typography|wordmarks?|emblems?|labels?|that says|with the (?:text|words|caption))\b",
+    re.IGNORECASE,
+)
+
+
+def _last_user_text(messages: list[dict]) -> str:
     for msg in reversed(messages):
         if msg.get("role") == "user":
-            text = msg.get("content", "")
-            break
+            return (msg.get("content") or "").strip()
+    return ""
+
+
+def detect_image_request(messages: list[dict]) -> dict | None:
+    """If the last user turn is a clear imperative image-generation request, return
+    {"prompt": <subject>, "mode": "photo"|"design"}; else None.
+
+    Deliberately high-precision: a miss falls through to normal routing (worst case: the
+    weak hands path, i.e. today's behavior), but a false-positive burns a ~2-min generation.
+    """
+    text = _last_user_text(messages)
+    if not text or _IMAGE_Q.match(text):
+        return None
+    m = _IMAGE_REQ.search(text)
+    if not m:
+        return None
+    # Prompt = the subject after the "…create an image of|" match; fall back to the full
+    # message (image models tolerate an instruction-y prefix fine).
+    prompt = text[m.end():].strip().strip(".!,-— ") or text
+    mode = "design" if _IMG_DESIGN.search(text) else "photo"
+    return {"prompt": prompt, "mode": mode}
+
+
+def classify_mode(messages: list[dict]) -> str:
+    """Return the routing mode for this conversation turn."""
+    text = _last_user_text(messages)
     if not text:
         return "default"
     # Research checked first — "research the best algorithm" → research model,
