@@ -80,14 +80,18 @@ def _sanitize_tool_args(tool, args: dict) -> dict:
 
     Weak tool-callers (the small silent-hands model) over-fill optional params by
     scraping the schema text and the user's prose — e.g. they turn "8k resolution"
-    in a prompt into width/height=4096 (slow / OOMs the VAE), copy the model name
-    literally as "default", or paste "./Generated_images" from the description. The
-    model should only choose semantic params (prompt, mode); the pipeline owns the
-    rest. So for the image tool (identified by an `output_dir` arg) we:
+    in a prompt into width/height=4096 (slow / OOMs the VAE), paste
+    "./Generated_images" from the description, or invent a plausible-but-nonexistent
+    image model. The model should only choose semantic params (prompt, mode); the
+    pipeline owns the rest. So for the image tool (identified by an `output_dir` arg):
       • output_dir — AUTHORITATIVE: always our type folder (model can't redirect).
-      • model — drop a placeholder ("default"/empty) → MCP uses its own default.
+      • model — DROP entirely → MCP uses its configured default. Critical: a weak
+        caller hallucinates real-looking names ("flux", "sdxl") that don't exist
+        locally; those slip past the placeholder check below, error in MCP, and send
+        the tool loop flailing with a fresh bad guess each turn. Never let it pick.
       • width/height/steps — drop entirely → MCP uses its sane defaults (1024²),
         instead of a resolution/step count guessed from the prompt text.
+    For non-image tools, only a placeholder model ("default"/empty) is dropped.
     """
     if tool is None:
         return args
@@ -95,9 +99,9 @@ def _sanitize_tool_args(tool, args: dict) -> dict:
     is_image_tool = "output_dir" in props
     if is_image_tool:
         args["output_dir"] = str(output_subdir("imagery"))
-        for k in ("width", "height", "steps"):
+        for k in ("width", "height", "steps", "model"):
             args.pop(k, None)
-    if "model" in props and (args.get("model") in (None, "", "default")):
+    elif "model" in props and (args.get("model") in (None, "", "default")):
         args.pop("model", None)
     return args
 
