@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsSystemTab: View {
     @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
@@ -20,6 +21,27 @@ struct SettingsSystemTab: View {
     @State private var tools: [ToolInfo] = []
     @State private var loadingTools = true
     @State private var promptExpanded = false
+    @State private var showingPromptImporter = false
+
+    /// Text file types accepted by the "Load from File…" importer (.txt + .md/.markdown).
+    private var promptFileTypes: [UTType] {
+        var t: [UTType] = [.plainText]
+        if let md = UTType(filenameExtension: "md") { t.append(md) }
+        if let markdown = UTType(filenameExtension: "markdown") { t.append(markdown) }
+        return t
+    }
+
+    /// Read a picked .txt/.md file into the system-prompt field. Setting `systemPrompt`
+    /// (an @AppStorage) autosaves it — identical to the paste path.
+    private func loadPromptFile(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        if let contents = try? String(contentsOf: url, encoding: .utf8) {
+            systemPrompt = contents
+            promptExpanded = true   // reveal the field so the load is visible
+        }
+    }
 
     private let client = SidecarClient()
 
@@ -76,18 +98,25 @@ struct SettingsSystemTab: View {
                         text: $systemPrompt,
                         font: .system(size: 12, design: .monospaced),
                         minHeight: 180,
-                        placeholder: "Empty = the built-in default Alice.\nPaste your own prompt to make Alice yours."
+                        placeholder: "Empty = the built-in default Alice.\nPaste, type, or “Load from File” (.txt/.md) to make Alice yours."
                     )
                     HStack {
                         Text("Auto-saves as you type. Stored locally — never in the repo.")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                         Spacer()
+                        Button("Load from File…") { showingPromptImporter = true }
+                            .font(.system(size: 11))
+                            .help("Load a .txt or .md file into the prompt (autosaves).")
                         if !systemPrompt.isEmpty {
                             Button("Reset to Default") { systemPrompt = "" }
                                 .font(.system(size: 11))
                         }
                     }
+                    .fileImporter(isPresented: $showingPromptImporter,
+                                  allowedContentTypes: promptFileTypes,
+                                  allowsMultipleSelection: false,
+                                  onCompletion: loadPromptFile)
                 }
             }
         }

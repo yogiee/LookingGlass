@@ -125,6 +125,7 @@ cat > "$APP/Contents/Info.plist" << PLIST
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSHumanReadableCopyright</key><string>Copyright © 2026 Yogi. All rights reserved.</string>
 	<key>LSUIElement</key><false/>
+	<key>NSLocationWhenInUseUsageDescription</key><string>Looking Glass shares your approximate location and local weather with Alice, so she knows where and when "here" is instead of guessing. It's used only to ground her replies — nothing is uploaded.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key><true/>

@@ -27,3 +27,6 @@ CLAUDE.md
 *.log
 build/
 dist/
+
+# Generated images (Alice's image-gen output; runtime artifacts, never source)
+Generated_images/

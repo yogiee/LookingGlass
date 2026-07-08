@@ -63,7 +63,8 @@ class SidecarClient {
         userName: String? = nil,
         mcpHintsEnabled: [String: Bool]? = nil,
         researchMode: Bool = false,
-        specialistMode: Bool = false
+        specialistMode: Bool = false,
+        environment: [String: String]? = nil
     ) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -99,6 +100,9 @@ class SidecarClient {
                     }
                     if researchMode { body["research_mode"] = true }
                     if specialistMode { body["specialist_mode"] = true }
+                    // Ambient context (location + weather) → merges into Alice's "## Your environment"
+                    // block. Absent when location isn't granted/known — she falls back to date/time.
+                    if let environment, !environment.isEmpty { body["environment"] = environment }
                     // Off-bundle user model config (role→model preset). Absent → the sidecar
                     // uses its shipped config.toml [models]. See ModelConfigStore / F2.
                     if let modelsMap = ModelConfigStore.activeMap() { body["models"] = modelsMap }

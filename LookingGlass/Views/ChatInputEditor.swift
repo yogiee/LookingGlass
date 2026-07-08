@@ -56,9 +56,13 @@ final class SendingTextView: NSTextView {
     // ⌘V: SwiftUI's Edit-menu Paste doesn't reliably route `paste:` down to an NSTextView
     // embedded via NSViewRepresentable, so the view never saw the paste. Claim ⌘V at the view
     // level — views get first crack at key equivalents, before the menu.
+    // BUT only when WE are focused: key equivalents are dispatched to EVERY view in the window, so
+    // without the first-responder guard the chat input steals ⌘V from an unrelated focused field
+    // (e.g. Settings → System Prompt) and pastes into itself. Guard it. (gotcha_swiftui_nstextview_image_input)
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-           event.charactersIgnoringModifiers?.lowercased() == "v" {
+           event.charactersIgnoringModifiers?.lowercased() == "v",
+           window?.firstResponder === self {
             paste(nil)
             return true
         }

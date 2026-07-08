@@ -42,6 +42,35 @@ struct MessageBubble: View, Equatable {
     // literal text next to the rendered image.
     private var displayContent: String { ImagePathScanner.stripMarkers(message.content) }
 
+    /// swift-markdown-ui renders synchronously on the main thread and STALLS on very large docs / big
+    /// tables (froze the app 2026-07-08 on table-heavy model output). Above these thresholds fall back to
+    /// plain monospaced text — readable (tables stay column-aligned), selectable, and it never hangs.
+    private var isHeavyMarkdown: Bool {
+        let c = displayContent
+        if c.count > 4000 { return true }
+        var tableRows = 0
+        for line in c.split(separator: "\n") where line.first(where: { !$0.isWhitespace }) == "|" {
+            tableRows += 1
+            if tableRows > 10 { return true }
+        }
+        return false
+    }
+
+    /// The message body: full markdown normally, a safe plain-text fallback for heavy content.
+    @ViewBuilder private var renderedContent: some View {
+        if isHeavyMarkdown {
+            Text(displayContent)
+                .font(.system(size: fontSize, design: .monospaced))
+                .textSelection(.enabled)
+                .lineSpacing(bubbleLineSpacing)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Markdown(displayContent)
+                .markdownTheme(chatTheme)
+                .textSelection(.enabled)
+        }
+    }
+
     // GitHub-flavored rendering, adapted to the chat. Built on MarkdownUI's
     // GitHub theme (headings with rules, blockquotes with a left bar, alternating
     // -row tables, task lists, thematic breaks) but with our chat voice: San
@@ -215,9 +244,7 @@ struct MessageBubble: View, Equatable {
     }
 
     private var userBubble: some View {
-        Markdown(displayContent)
-            .markdownTheme(chatTheme)
-            .textSelection(.enabled)
+        renderedContent
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
             .background(
@@ -232,10 +259,8 @@ struct MessageBubble: View, Equatable {
             if message.content.isEmpty && message.isStreaming {
                 HStack(spacing: 6) {
                     ProgressView().scaleEffect(0.7)
-                    Text("Thinking…")
-                        .font(fontChoice.font(fontSize))
-                        .tracking(ChatFont.tracking(fontSize))
-                        .foregroundStyle(.secondary)
+                    ThinkingLabel(font: fontChoice.font(fontSize),
+                                  tracking: ChatFont.tracking(fontSize))
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 15)
@@ -253,9 +278,7 @@ struct MessageBubble: View, Equatable {
                     .padding(.vertical, 13)
                     .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
             } else {
-                Markdown(displayContent)
-                    .markdownTheme(chatTheme)
-                    .textSelection(.enabled)
+                renderedContent
                     .padding(.horizontal, 16)
                     .padding(.vertical, 13)
                     .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
@@ -402,5 +425,46 @@ struct ActionButton: View {
         .buttonStyle(.plain)
         .help(label)
         .onHover { hovering = $0 }
+    }
+}
+
+// MARK: - Thinking indicator (rotating, Alice-flavored)
+// A little personality instead of a static "Thinking…": the word cross-fades to a new one every
+// couple of seconds while Alice composes. A few Wonderland / Looking-Glass nods for the theme.
+private enum ThinkingWords {
+    static let all: [String] = [
+        "Pondering…", "Musing…", "Percolating…", "Noodling…", "Ruminating…",
+        "Mulling it over…", "Untangling…", "Connecting the dots…", "Cogitating…",
+        "Scheming…", "Conjuring…", "Turning it over…", "Chewing on it…",
+        "Down the rabbit hole…", "Curiouser and curiouser…", "Through the looking glass…",
+        "Painting the roses…", "Chasing the white rabbit…", "Six impossible things…",
+        "Consulting the Cheshire Cat…",
+    ]
+    static func random(excluding current: String? = nil) -> String {
+        let pool = current.map { c in all.filter { $0 != c } } ?? all
+        return pool.randomElement() ?? "Thinking…"
+    }
+}
+
+struct ThinkingLabel: View {
+    let font: Font
+    let tracking: CGFloat
+    @State private var phrase = ThinkingWords.random()
+
+    var body: some View {
+        Text(phrase)
+            .font(font)
+            .tracking(tracking)
+            .foregroundStyle(.secondary)
+            .contentTransition(.opacity)
+            .task {
+                // Auto-cancels when the bubble stops "thinking" (view disappears once content streams in).
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(2.2))
+                    withAnimation(.easeInOut(duration: 0.35)) {
+                        phrase = ThinkingWords.random(excluding: phrase)
+                    }
+                }
+            }
     }
 }

@@ -204,6 +204,9 @@ struct RootView: View {
             sidecar.start()
             systemMonitor.ollamaHost = ollamaHost
             systemMonitor.start()
+            // Alice's environment: begin gathering location (CoreLocation) + weather (Open-Meteo).
+            // Requests permission on first launch; silently no-ops if denied.
+            AmbientContextService.shared.start()
             // Guard A: refresh the model registry on every launch so newly pulled /
             // removed models are reflected without manual action.
             await modelCatalog.refresh(ollamaHost: ollamaHost)

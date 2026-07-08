@@ -123,6 +123,9 @@ class ChatViewModel: ObservableObject {
         // Empty → sidecar uses its ~/Documents/LookingGlass default. Ignored when
         // in a project (the project folder wins).
         let filesRoot = UserDefaults.standard.string(forKey: "filesRoot")
+        // Alice's ambient context (location + weather from macOS). Captured on the main actor here;
+        // the sidecar folds it into her "## Your environment" block. nil when location isn't granted.
+        let environment = AmbientContextService.shared.environmentDict
 
         streamTask = Task {
             defer {
@@ -151,7 +154,8 @@ class ChatViewModel: ObservableObject {
                     userName: userName,
                     mcpHintsEnabled: mcpHintsEnabled,
                     researchMode: researchMode,
-                    specialistMode: specialistMode
+                    specialistMode: specialistMode,
+                    environment: environment
                 ) {
                     guard !Task.isCancelled else { break }
                     apply(event)
