@@ -122,7 +122,11 @@ def classify_mode(messages: list[dict]) -> str:
         return "research"
     if _CODING.search(text):
         return "coding"
-    # Tool-need → the tools lane, so a tool-less chat default doesn't get the turn.
-    if _TOOL_NEED.search(text):
-        return "coding"
+    # Tool-need reroute DISABLED 2026-07-08: the chat default is now ornith:9b (tool-CAPABLE), so
+    # tool-needing turns self-serve on the voice model (the voice+hands collapse). The old reroute
+    # (→ "coding") was a ZINI-era workaround for a tool-LESS default, and it false-positived on
+    # innocent phrases like "right now" — sending plain chat to the work lane, where gemma then broke
+    # persona ("trained by Google"). RE-ENABLE if reverting to a tool-less voice (ZINI):
+    # if _TOOL_NEED.search(text):
+    #     return "coding"
     return "default"

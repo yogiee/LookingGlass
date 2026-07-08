@@ -24,7 +24,13 @@
 # builds in real Ollama serving — MLX's long-context edge is FIDELITY (it processes the full context)
 # not raw speed. THIS live base stays GGUF precisely because it leashes KV: bounded RAM, and it
 # truncates long inputs (bounded-but-lossy) — the right behavior for an always-on chat default.
-default = "gemma4:26b"
+# 2026-07-06: base default aligned to the fleet default (voice+hands collapse). Was gemma4:26b (GGUF,
+# num_ctx-leashed); now gemma4:12b-mlx — the tool-native fleet default. 26b GGUF de-pinned from LG's roster
+# (OllamaMCP still owns it: its local_vision#fallback1 + chat fallback). Tradeoff: MLX ignores num_ctx
+# (unbounded KV), but 12b is small so marathon-chat KV stays manageable. Offline deep-research tail stays
+# gemma4:26b-mlx (see [models] comment + the LG consumer manifest). Roster review: gemma4_moe_speed_and_mlx_fit.
+# 2026-07-08: base default aligned to the ornith voice+hands trial (was gemma4:12b-mlx); revert together with [models].default.
+default = "gemma4:26b-mlx"
 ollama_host = "http://localhost:11434"
 think = false
 # Context window sent to Ollama (in `options`). The models' OWN default is 262144
@@ -98,9 +104,23 @@ keep_alive = "5m"
 #   research   = "gpt-oss:120b-cloud"
 #   specialist = "gemma4:31b-cloud"
 [models]
-default       = "s80982708/ZINI-LOCAL:latest"
-coding        = "gemma4:12b-mlx"
-research      = "gemma4:12b-mlx"
+# 2026-07-06 VOICE+HANDS COLLAPSE (trial). default flipped ZINI → gemma4:12b-mlx: it out-behaves ZINI on
+# every lite.py axis (4/4, confab-clean, register TIGHT) AND is tool-native (2/2 grounding), so the
+# silent-hands butler is now DORMANT for default turns (the voice model calls tools directly). Cost: chat
+# decode 63→34 t/s (still ~5× reading speed) + warmth is the one unmeasured axis → this is a living-on-it
+# trial. REVERT: set default back to "s80982708/ZINI-LOCAL:latest" (kept on disk). Refs:
+# gemma4_moe_speed_and_mlx_fit / lite_bench_voice_eval_2026-07 / design_model_grading_table.
+#
+# 2026-07-08 ORNITH VOICE+HANDS TRIAL — default → ornith:9b (supersedes the 07-06 gemma trial above).
+# Full eval passed (candidate_zini_tool_caller_companions 07-08a..f): confab N=5 0.89 (>ZINI 0.73), organic
+# voice > deployed Alice, register TIGHT with the brevity clause, tool-native (self-serves → butler dormant),
+# RAM co-resident with image-gen = 18.4GB, and the with-tools pressure re-test CLEARED (holds honestly when
+# the search returns empty — no D4b fabrication). qwen3.5-arch → think=false (global) honored cleanly.
+# NEEDS the 2 Alice-prompt clauses (LENGTH + tool-discipline) pasted into Settings → Personality.
+# REVERT ladder (all on disk): ornith:9b → gemma4:12b-mlx (07-06 trial) → s80982708/ZINI-LOCAL:latest.
+default       = "gemma4:26b-mlx"   # 07-09 "ONE BIG MODEL" (Yogi's Simple mode): gemma4:26b-mlx is voice+work. Tool-CAPABLE → calls tools DIRECTLY (no hands, no plating-fabrication), GROUNDS instead of inventing (unlike ZINI/ornith), great voice, environment-aware. Cost: 17.6GB RAM (image-gen co-load handled by unload-before-image, see agent.py) + rare persona-slip. Revert ladder: gemma4:26b-mlx → ZINI+gemma-hands → gemma4:12b-mlx.
+coding        = "gemma4:26b-mlx"   # one-big-model: same capable model does code (was 12b-mlx)
+research      = "gemma4:26b-mlx"   # one-big-model: same capable model does research (was 12b-mlx)
 # deep_research availability/privacy fallback chain (runtime uses the primary; the local tail is a
 # manual pick when cloud is unreachable): gpt-oss:120b-cloud -> gemma4:31b-cloud -> gemma4:26b-mlx.
 # Why 26b-mlx for the local tail: our own A/B (07-02, gotcha_mlx_gguf_numctx_truncation) — MLX ignores
@@ -110,7 +130,7 @@ research      = "gemma4:12b-mlx"
 # real distinction is full-context fidelity, not speed.)
 deep_research = "gpt-oss:120b-cloud"
 specialist    = "gemma4:31b-cloud"
-hands         = "granite4.1:3b"
+hands         = "gemma4:26b-mlx"   # DORMANT under the one-big-model config (voice is tool-capable → direct tools, no butler). Kept = voice so hands_ok is False. Only matters if reverting to a tool-less voice (ZINI) → then set a distinct executor.
 
 [server]
 port = 8765

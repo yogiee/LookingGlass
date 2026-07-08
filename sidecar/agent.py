@@ -1,7 +1,9 @@
 import asyncio
 import json
+import os
 import re
 import time
+from datetime import datetime
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import AsyncIterator
@@ -426,6 +428,34 @@ class AgentConfig:
     models: dict = field(default_factory=dict)  # global [models] routing table
 
 
+def _ambient_context(extra: dict | None = None) -> str:
+    """Alice's ENVIRONMENT — what's true RIGHT NOW, so she doesn't guess or fall back on her training
+    cutoff (the wrong-year fabrications). This is her 'home': she should know the ground she stands on,
+    not just the tools she can call.
+
+    Phase 1 (here, sidecar, zero-permission): date + local time + timezone/region.
+    Phase 2 (later): the Swift app passes precise location (CoreLocation), weather (WeatherKit), and
+    device state via `extra` — they merge in below with no further change here.
+    """
+    now = datetime.now().astimezone()
+    h = now.hour
+    part = ("the small hours" if h < 5 else "early morning" if h < 8 else "morning" if h < 12
+            else "afternoon" if h < 17 else "evening" if h < 21 else "night")
+    try:
+        tz = os.readlink("/etc/localtime").split("zoneinfo/")[-1]   # e.g. "Asia/Kolkata" (hints the region)
+    except Exception:
+        tz = now.tzname() or ""
+    lines = [
+        f"- Date: {now.strftime('%A, %B %-d, %Y')}",
+        f"- Local time: {now.strftime('%-I:%M %p')} ({part})" + (f", timezone {tz}" if tz else ""),
+    ]
+    for k, v in (extra or {}).items():
+        if v:
+            lines.append(f"- {str(k).replace('_', ' ').capitalize()}: {v}")
+    return ("## Your environment — what's true right now. Use it; don't guess or fall back on your "
+            "training cutoff.\n" + "\n".join(lines))
+
+
 async def chat_stream(
     messages: list[dict],
     model: str | None,
@@ -442,6 +472,7 @@ async def chat_stream(
     research_mode: bool = False,
     specialist_mode: bool = False,
     models_override: dict | None = None,
+    environment: dict | None = None,
 ) -> AsyncIterator[dict]:
     """Agentic loop:
 
@@ -512,6 +543,10 @@ async def chat_stream(
     base_prompt = system_prompt if (system_prompt and system_prompt.strip()) else config.system_prompt
     if user_name and user_name.strip():
         base_prompt = f"The user's name is {user_name.strip()}.\n\n" + base_prompt
+    # Situate Alice in her environment (date/time/timezone) so she doesn't guess or fall back on her
+    # training cutoff — the root of the wrong-year fabrications. Extensible via _ambient_context(extra):
+    # Swift can later add precise location + weather + device state. (2026-07-09; fix_current_date_injection)
+    base_prompt = _ambient_context(environment) + "\n\n" + base_prompt
 
     # Output scope: explicit working_dir → project folder → user's configured
     # files root (independent chats) → default ~/Documents/LookingGlass. Tool
@@ -613,12 +648,14 @@ async def chat_stream(
                 client, host, resolved_model
             )
 
-            # Silent-hands butler: the voice model can't call tools but tools are
-            # available. Rather than let it fabricate tool calls (ZINI's failure
-            # mode), a small tool-capable hands model runs the agent loop and the
-            # voice model plates the result. Skipped for research/specialist (those
-            # already route to tool-capable models). Falls through to the normal
-            # tool-less loop (voice answers directly) if no distinct hands model.
+            # Silent-hands butler: a distinct tool-capable `hands` model runs the tool loop and the
+            # voice model PLATES from the results (passed NO tools → can't fabricate tool calls).
+            # Fires ONLY for a tool-LESS voice (e.g. ZINI) — the `not attach_tools` guard. A
+            # tool-CAPABLE voice (gemma, a menu-picked model) calls tools DIRECTLY; routing it through a
+            # distinct hands model would needlessly CO-LOAD both models (memory pressure + post-tool lag
+            # — the 2026-07-09 regression Yogi caught with gemma4:26b-mlx). Skipped for research/
+            # specialist (already tool-capable lanes). NOTE: a tool-capable-but-UNRELIABLE voice (ornith,
+            # parked 07-08k) would need an explicit opt-in flag to force plating — deferred unless revisited.
             if bool(tool_schemas) and not attach_tools and not research_mode and not specialist_mode:
                 hands_model = (
                     project_model_for_mode(project_cfg, config.models, "hands")
