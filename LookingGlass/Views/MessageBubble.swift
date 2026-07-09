@@ -27,6 +27,7 @@ struct MessageBubble: View, Equatable {
     @Environment(\.chatFontSize) private var fontSize
     @Environment(\.chatLineHeight) private var lineHeight
     @AppStorage("chatFontChoice") private var chatFontChoiceRaw = ChatFontChoice.system.rawValue
+    @EnvironmentObject private var reportPanel: ReportPanelState
     @State private var isHovering = false
     @State private var hideTask: Task<Void, Never>?
 
@@ -43,8 +44,10 @@ struct MessageBubble: View, Equatable {
     private var displayContent: String { ImagePathScanner.stripMarkers(message.content) }
 
     /// swift-markdown-ui renders synchronously on the main thread and STALLS on very large docs / big
-    /// tables (froze the app 2026-07-08 on table-heavy model output). Above these thresholds fall back to
-    /// plain monospaced text — readable (tables stay column-aligned), selectable, and it never hangs.
+    /// tables (froze the app 2026-07-08 on table-heavy model output) — and LazyVStack re-instantiates
+    /// bubbles on every viewport crossing, so a heavy mount re-pays that cost on each scroll past.
+    /// Above these thresholds the bubble shows a snippet card instead; the full document renders in
+    /// the WKWebView report panel, where WebKit lays it out off the main thread.
     private var isHeavyMarkdown: Bool {
         let c = displayContent
         if c.count > 4000 { return true }
@@ -56,19 +59,11 @@ struct MessageBubble: View, Equatable {
         return false
     }
 
-    /// The message body: full markdown normally, a safe plain-text fallback for heavy content.
-    @ViewBuilder private var renderedContent: some View {
-        if isHeavyMarkdown {
-            Text(displayContent)
-                .font(.system(size: fontSize, design: .monospaced))
-                .textSelection(.enabled)
-                .lineSpacing(bubbleLineSpacing)
-                .fixedSize(horizontal: false, vertical: true)
-        } else {
-            Markdown(displayContent)
-                .markdownTheme(chatTheme)
-                .textSelection(.enabled)
-        }
+    /// The message body — only ever mounted for non-heavy content (see isHeavyMarkdown).
+    private var renderedContent: some View {
+        Markdown(displayContent)
+            .markdownTheme(chatTheme)
+            .textSelection(.enabled)
     }
 
     // GitHub-flavored rendering, adapted to the chat. Built on MarkdownUI's
@@ -236,11 +231,39 @@ struct MessageBubble: View, Equatable {
 
     @ViewBuilder
     private var bubbleContent: some View {
-        if message.role == .user {
+        // Heavy content never mounts MarkdownUI in the scroll path — a snippet
+        // card opens it in the report panel instead. Alice's short conversational
+        // preamble (when detectable) stays a normal bubble ABOVE the card, so her
+        // dialog doesn't get swallowed into the document.
+        if isHeavyMarkdown, !message.isStreaming {
+            let split = DocumentSplit.split(displayContent)
+            let document = split?.document ?? displayContent
+            VStack(alignment: .leading, spacing: 8) {
+                if let split {
+                    proseBubble(split.prose)
+                }
+                HeavyMarkdownCard(content: document) {
+                    withAnimation(.easeInOut(duration: 0.28)) {
+                        reportPanel.show(text: document)
+                    }
+                }
+            }
+        } else if message.role == .user {
             userBubble
         } else {
             assistantBubble
         }
+    }
+
+    /// Assistant-bubble chrome around a plain markdown string — used for the
+    /// preamble that rides above a document card (always short, safe to mount).
+    private func proseBubble(_ text: String) -> some View {
+        Markdown(text)
+            .markdownTheme(chatTheme)
+            .textSelection(.enabled)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
+            .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
     }
 
     private var userBubble: some View {
@@ -268,15 +291,31 @@ struct MessageBubble: View, Equatable {
             } else if message.isStreaming {
                 // Plain text while streaming — markdown is parsed once on completion
                 // to avoid re-parsing partial/unclosed syntax on every token.
-                Text(message.content)
-                    .font(fontChoice.font(fontSize))
-                    .tracking(ChatFont.tracking(fontSize))
-                    .lineSpacing(bubbleLineSpacing)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 13)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
+                // But a document never floods the bubble as raw markdown: once the
+                // stream crosses the heavy threshold (or a detected document region
+                // outgrows a preamble), the prose freezes and a composing card
+                // ticks a live char count instead. Also skips re-laying-out a giant
+                // Text on every token — real cost on long reports.
+                let split = DocumentSplit.split(displayContent)
+                let documentGrowing = isHeavyMarkdown || (split?.document.count ?? 0) > 500
+                if documentGrowing {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let split {
+                            proseBubble(split.prose)
+                        }
+                        ComposingDocumentCard(charCount: (split?.document ?? displayContent).count)
+                    }
+                } else {
+                    Text(message.content)
+                        .font(fontChoice.font(fontSize))
+                        .tracking(ChatFont.tracking(fontSize))
+                        .lineSpacing(bubbleLineSpacing)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 13)
+                        .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
+                }
             } else {
                 renderedContent
                     .padding(.horizontal, 16)
