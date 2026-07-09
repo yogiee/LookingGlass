@@ -29,6 +29,8 @@ It's a two-process app: a native SwiftUI window owns the experience, and a local
 - **Organized file saving** — images, documents, and downloads Alice creates land in tidy type-folders under a save location you choose (**Settings → System → Files**), or the project folder when you're in a Project
 - **Per-chat model switching** — change the model for one chat from the input bar without touching your global default; cloud "specialist" models are an explicit, consent-gated tap
 - **GitHub-flavored markdown** rendering — headings, blockquotes, tables, task lists, code blocks
+- **Big documents stay smooth** — when Alice writes a report, her commentary streams in the bubble while a live "Composing document…" counter tracks the rest; the finished document lands as a compact card that opens in a dedicated **report viewer** with its own WebKit rendering engine, so even giant table-heavy documents open fast and scroll smoothly
+- **A clear "working" state** — while a turn runs, the message box locks (only Stop stays active) and a soft light laps its border, so long tool-call stretches never look stalled
 - **Selectable chat font** — a sans for prose paired with a matching monospace for code (SF Pro, Inter, IBM Plex Sans, Roboto)
 - **Configurable** — Ollama URL, per-tool toggles, MCP servers, save location, custom avatar, font size, line height, and Alice's system prompt, all in Settings
 - **Auto-updates** via [Sparkle](https://sparkle-project.org)
@@ -49,17 +51,17 @@ The app starts and health-checks its sidecar automatically; updates arrive in-ap
 
 ## Models
 
-Looking Glass routes by role rather than using one model for everything. The chat (voice) model can be a small, characterful model that doesn't itself call tools — when a turn needs a tool, a separate **tool-capable "hands" model** runs it behind the scenes and the voice model presents the result. Configure roles in `sidecar/config.toml` (`[models]`) or pick per-chat in the app.
+Looking Glass resolves a model per **role**. The current default is deliberately simple — one capable, tool-native model handles chat, coding, and research, calling tools directly — with cloud models reserved for explicit, consent-gated taps. Configure roles in `sidecar/config.toml` (`[models]`) or pick per-chat in the app.
 
 The current defaults:
 
 | Role | Model | Pull |
 |------|-------|------|
-| Chat (voice) | `s80982708/ZINI-LOCAL:latest` | `ollama pull s80982708/ZINI-LOCAL:latest` |
-| Tool-caller (hands) | `granite4.1:3b` | `ollama pull granite4.1:3b` |
-| Work (code / research) | `gemma4:12b-mlx` | `ollama pull gemma4:12b-mlx` |
+| Chat / coding / research | `gemma4:26b-mlx` | `ollama pull gemma4:26b-mlx` |
 | Specialist (consult, cloud) | `gemma4:31b-cloud` | `ollama pull gemma4:31b-cloud` |
 | Deep research (cloud) | `gpt-oss:120b-cloud` | `ollama pull gpt-oss:120b-cloud` |
+
+Prefer a small, characterful chat model that can't call tools itself? That works too: pick it as the chat model and a separate **tool-capable "hands" model** (the `hands` role) runs tools behind the scenes while the voice model presents the result.
 
 Use any chat-capable model you like — anything installed shows up in the picker. If the configured model isn't installed, the app falls back to one that is and tells you. Cloud models (`*-cloud`) run on Ollama's servers and are only ever used on an explicit tap.
 
