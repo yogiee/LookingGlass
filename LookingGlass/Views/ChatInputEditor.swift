@@ -44,6 +44,9 @@ final class SendingTextView: NSTextView {
     var onImagePaste: ((NSImage) -> Void)?
 
     override func keyDown(with event: NSEvent) {
+        // Locked while a turn is running (isEditable off) — swallow keys so Return
+        // can't re-submit and typing doesn't beep against the read-only view.
+        guard isEditable else { return }
         // keyCode 36 = Return. Plain Return sends; Shift+Return falls through to
         // the default (inserts a line break).
         if event.keyCode == 36, !event.modifierFlags.contains(.shift) {
@@ -109,6 +112,9 @@ struct ChatInputEditor: NSViewRepresentable {
     let minHeight: CGFloat
     let maxHeight: CGFloat
     let controller: ChatInputController
+    /// False while a turn is streaming — the field goes read-only (still selectable
+    /// for copying) so the input is visibly locked until STOP or completion.
+    var isEditable: Bool = true
     var onSend: () -> Void
     var onImagePaste: ((NSImage) -> Void)?
     var onFocusChange: (Bool) -> Void
@@ -126,6 +132,7 @@ struct ChatInputEditor: NSViewRepresentable {
         tv.onImagePaste = onImagePaste
         tv.delegate = context.coordinator
         tv.drawsBackground = false
+        tv.isEditable = isEditable
         tv.isRichText = false
         tv.allowsUndo = true
         tv.textContainerInset = NSSize(width: 4, height: 7)
@@ -149,6 +156,9 @@ struct ChatInputEditor: NSViewRepresentable {
         guard let tv = scroll.documentView as? SendingTextView else { return }
         tv.onSend = onSend
         tv.onImagePaste = onImagePaste
+        if tv.isEditable != isEditable {
+            tv.isEditable = isEditable
+        }
         if tv.string != text {
             tv.string = text
         }
