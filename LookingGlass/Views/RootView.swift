@@ -190,8 +190,8 @@ struct RootView: View {
         }
         // Full-window report panel overlay — covers rail + sidebar + chat
         .overlay {
-            if reportPanel.isVisible, let path = reportPanel.path {
-                ResearchReportPanel(path: path, fontSize: fontSize, lineHeight: lineHeight) {
+            if reportPanel.isVisible, let source = reportPanel.source {
+                ResearchReportPanel(source: source, fontSize: fontSize, lineHeight: lineHeight) {
                     withAnimation(.easeInOut(duration: 0.28)) { reportPanel.dismiss() }
                 }
                 .transition(.move(edge: .trailing).combined(with: .opacity))
