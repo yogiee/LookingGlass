@@ -6,6 +6,26 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.8.12</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.8.12 — a calmer chat while Alice works</h3>
+        <ul>
+          <li>The message box locks while Alice is working, with a soft light running around its border — you can always tell a response is still in progress (especially during long tool calls), and only Stop stays active.</li>
+          <li>Big formatted responses no longer flood the chat: Alice's reply stays in its bubble, and the document arrives as a compact card — click to open it in the report viewer.</li>
+          <li>While a document is being written, a live "Composing document…" counter shows progress instead of raw markdown scrolling past.</li>
+          <li>The report viewer has a new rendering engine that handles huge documents smoothly — table-heavy responses that could freeze the app now open fast and scroll silky, in both light and dark.</li>
+        </ul>
+      ]]></description>
+      <pubDate>Fri, 10 Jul 2026 01:01:49 +0530</pubDate>
+      <sparkle:version>23</sparkle:version>
+      <sparkle:shortVersionString>0.8.12</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.8.12/LookingGlass.dmg"
+        sparkle:edSignature="eYDpf0LZe9+thFWHRZw5oyg73F8eHpWyIXkRtdcCVbIioGuWpXjZltm3fDuIU1/56mJt9hUvVjGNm/4sDeNYAw==" length="50477165"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.11</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.11 — on-device image tools: OCR, editing, and 4× AI upscale</h3>
