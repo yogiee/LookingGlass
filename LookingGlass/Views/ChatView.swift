@@ -302,6 +302,13 @@ struct ChatView: View {
     // Reserve scroll space for the whole input region (text field + bottom bar + padding)
     private var inputReserve: CGFloat { inputHeight + 84 }
 
+    /// Dim level for input-bar controls while a turn runs — everything except STOP
+    /// is disabled, and this makes the lock visible at a glance.
+    private let lockedOpacity = 0.45
+    /// The editor had focus when the lock engaged → restore it when the turn ends
+    /// (never steals focus from another field, e.g. Settings → System Prompt).
+    @State private var refocusAfterStream = false
+
     var body: some View {
         ZStack(alignment: .bottom) {
             messageList
@@ -336,6 +343,16 @@ struct ChatView: View {
         // Re-run the stale-model guard once the catalog arrives (covers the launch race
         // where a chat loads before /models has responded).
         .onChange(of: catalog.models) { _, _ in reconcileModelOverride() }
+        // Input lock lifecycle: remember whether the editor had focus when the turn
+        // started, and hand focus back when it ends so typing can resume immediately.
+        .onChange(of: viewModel.isStreaming) { _, streaming in
+            if streaming {
+                refocusAfterStream = inputFocused
+            } else if refocusAfterStream {
+                refocusAfterStream = false
+                inputController.focus()
+            }
+        }
         .task {
             viewModel.toolCallStore = toolCallStore
             chatModelOverride = store.activeConversationID.flatMap { store.conversationModel($0) }
@@ -623,19 +640,27 @@ struct ChatView: View {
                     .strokeBorder(Color.accentColor, lineWidth: isDropTargeted ? 2 : 0)
                     .animation(.easeInOut(duration: 0.12), value: isDropTargeted)
             )
+            // "Working" shimmer — a light lap around the border for as long as the turn
+            // runs. Persists through tool calls, where the thinking label has already
+            // been replaced by tool cards and only STOP hinted that work continues.
+            .overlay {
+                if viewModel.isStreaming {
+                    ProcessingShimmerBorder(cornerRadius: 16)
+                        .transition(.opacity)
+                }
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
         .padding(.bottom, 30)
         .animation(.easeInOut(duration: 0.16), value: inputFocused)
+        .animation(.easeInOut(duration: 0.3), value: viewModel.isStreaming)
     }
 
     private var inputTextField: some View {
         ZStack(alignment: .topLeading) {
             if viewModel.inputText.isEmpty {
-                Text(viewModel.researchMode
-                     ? "What should I research?   (Enter to send · Shift+Enter for newline)"
-                     : "Message Alice…   (Enter to send · Shift+Enter for newline)")
+                Text(inputPlaceholder)
                     .font(fontChoice.font(fontSize))
                     .tracking(ChatFont.tracking(fontSize))
                     .foregroundStyle(.tertiary)
@@ -652,6 +677,7 @@ struct ChatView: View {
                 minHeight: inputMinHeight,
                 maxHeight: inputMaxHeight,
                 controller: inputController,
+                isEditable: !viewModel.isStreaming,
                 onSend: { submit() },
                 onImagePaste: { handleImagePaste($0) },
                 onFocusChange: { focused in inputFocused = focused }
@@ -661,6 +687,14 @@ struct ChatView: View {
         .padding(.horizontal, 14)
         .padding(.top, 10)
         .padding(.bottom, 4)
+        .opacity(viewModel.isStreaming ? lockedOpacity : 1)
+    }
+
+    private var inputPlaceholder: String {
+        if viewModel.isStreaming { return "Alice is working…" }
+        return viewModel.researchMode
+            ? "What should I research?   (Enter to send · Shift+Enter for newline)"
+            : "Message Alice…   (Enter to send · Shift+Enter for newline)"
     }
 
     /// Compact label for the switcher: name + variant so it's clear WHICH model is
@@ -741,18 +775,24 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(viewModel.isStreaming)
+            .opacity(viewModel.isStreaming ? lockedOpacity : 1)
             .help("Attach an image")
             if inputFocused {
-                FormatButton(icon: "bold", help: "Bold") { inputController.wrap(prefix: "**", suffix: "**") }
-                FormatButton(icon: "italic", help: "Italic") { inputController.wrap(prefix: "*", suffix: "*") }
-                FormatButton(icon: "chevron.left.forwardslash.chevron.right", help: "Inline code") { inputController.wrap(prefix: "`", suffix: "`") }
-                FormatButton(icon: "curlybraces", help: "Code block") { inputController.wrap(prefix: "\n```\n", suffix: "\n```\n") }
-                FormatButton(icon: "list.bullet", help: "List item") { inputController.wrap(prefix: "\n- ", suffix: "") }
+                Group {
+                    FormatButton(icon: "bold", help: "Bold") { inputController.wrap(prefix: "**", suffix: "**") }
+                    FormatButton(icon: "italic", help: "Italic") { inputController.wrap(prefix: "*", suffix: "*") }
+                    FormatButton(icon: "chevron.left.forwardslash.chevron.right", help: "Inline code") { inputController.wrap(prefix: "`", suffix: "`") }
+                    FormatButton(icon: "curlybraces", help: "Code block") { inputController.wrap(prefix: "\n```\n", suffix: "\n```\n") }
+                    FormatButton(icon: "list.bullet", help: "List item") { inputController.wrap(prefix: "\n- ", suffix: "") }
+                }
+                .disabled(viewModel.isStreaming)
+                .opacity(viewModel.isStreaming ? lockedOpacity : 1)
             }
             Spacer()
             // Per-chat model switcher — quick-access; sets this chat's override (not the
             // global default). The Cheshire "Model" side panel sets the global default.
             modelSwitcher
+                .opacity(viewModel.isStreaming ? lockedOpacity : 1)
                 .padding(.trailing, 2)
             // Deep Research toggle — right of formatting buttons, left of send
             Button {
@@ -768,6 +808,7 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .disabled(viewModel.isStreaming)
+            .opacity(viewModel.isStreaming ? lockedOpacity : 1)
             .help(viewModel.researchMode
                   ? "Deep Research active — Alice will search, read sources, and synthesize a report"
                   : "Enable Deep Research mode")
