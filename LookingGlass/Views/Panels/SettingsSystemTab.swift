@@ -6,6 +6,7 @@ struct SettingsSystemTab: View {
     @AppStorage("systemPrompt") private var systemPrompt = ""
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
     @AppStorage("appleIntelligenceEnabled") private var appleIntelligenceEnabled = true
+    @AppStorage("semanticSearchEnabled") private var semanticSearchEnabled = false
     @AppStorage("ocrPastedImages") private var ocrPastedImages = true
     @ObservedObject private var upscaler = SuperResolutionService.shared
     @AppStorage("filesRoot") private var filesRoot = ""
@@ -51,6 +52,7 @@ struct SettingsSystemTab: View {
             connectionSection
             filesSection
             appleIntelligenceSection
+            semanticSearchSection
             imagesSection
             toolsSection
         }
@@ -188,6 +190,22 @@ struct SettingsSystemTab: View {
                 Text("Not available — enable Apple Intelligence in System Settings, or check that your device is supported.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: Meaning-based search
+
+    private var semanticSearchSection: some View {
+        Section("History Search") {
+            Toggle(isOn: $semanticSearchEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Meaning-based search")
+                        .font(.system(size: 12, weight: .medium))
+                    Text("Experimental. Adds a “Related” section to history search that finds conversations by meaning. Currently reliable only for content-rich chats — off by default until conversation summaries improve its recall. Keyword search is unchanged. On-device via Ollama (embeddinggemma).")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

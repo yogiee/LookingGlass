@@ -7,7 +7,7 @@ struct ChatHistoryPanel: View {
     @State private var hoveringFolderBack = false
     @FocusState private var searchFocused: Bool
     @State private var searchInput = ""
-    @State private var expandTask: Task<Void, Never>?
+    @State private var searchDebounce: Task<Void, Never>?
     @Environment(\.colorScheme) private var colorScheme
     private var borderColor: Color { colorScheme == .dark ? .white : .black }
 
@@ -149,19 +149,21 @@ struct ChatHistoryPanel: View {
                 .font(.system(size: 15))
                 .focused($searchFocused)
                 .onChange(of: searchInput) { _, new in
-                    expandTask?.cancel()
+                    // Debounce only — the raw query drives FTS directly. We removed the FM
+                    // synonym-expansion: it rewrote single-word queries into implicit-AND
+                    // FTS queries that returned ZERO when a synonym wasn't co-present
+                    // (e.g. "Riddler" → "riddler enigma" → no match, though the chat has
+                    // "Riddler"). It also ran an on-device LLM on every keystroke, stalling
+                    // the field. Semantic "Related" now handles meaning-recall properly.
+                    searchDebounce?.cancel()
                     if new.isEmpty {
                         store.searchText = ""
                         return
                     }
-                    expandTask = Task {
-                        try? await Task.sleep(for: .milliseconds(300))
+                    searchDebounce = Task {
+                        try? await Task.sleep(for: .milliseconds(200))
                         guard !Task.isCancelled else { return }
-                        if let expanded = await AppleIntelligenceService.shared.expandSearchQuery(new) {
-                            store.searchText = expanded
-                        } else {
-                            store.searchText = new
-                        }
+                        store.searchText = new
                     }
                 }
             if !searchInput.isEmpty {
@@ -182,10 +184,12 @@ struct ChatHistoryPanel: View {
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(searchFocused ? Color.primary.opacity(0.07) : Color.clear)
-        )
+                .allowsHitTesting(false)   // decorative — must not eat clicks meant for
+        )                                  // the text field (double-click) or the ✕ button
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(Color.primary.opacity(searchFocused ? 0.25 : 0.15), lineWidth: 0.5)
+                .allowsHitTesting(false)
         )
         .animation(.easeInOut(duration: 0.15), value: searchFocused)
         .padding(.horizontal, 14)
@@ -216,32 +220,56 @@ struct ChatHistoryPanel: View {
                     sectionLabel("Chats")
                 }
 
-                if store.conversations.isEmpty {
+                if store.conversations.isEmpty && store.relatedConversations.isEmpty && !store.isSearchingRelated {
                     emptyState
                 } else {
-                    ForEach(store.conversations) { item in
-                        ChatHistoryRow(
-                            title: item.title.isEmpty ? "Untitled" : item.title,
-                            preview: item.preview.isEmpty ? "No messages yet" : item.preview,
-                            time: Self.relativeTime(item.updatedAt),
-                            isActive: item.id == store.activeConversationID,
-                            isEditing: editingID == item.id,
-                            draftTitle: $draftTitle,
-                            renameFocused: $renameFocused,
-                            onCommitRename: commitRename,
-                            onCancelRename: cancelRename,
-                            onRename: { beginRename(item) },
-                            onDelete: { store.delete(item.id) }
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            if editingID != item.id { store.activeConversationID = item.id }
-                        }
-                        .contextMenu { chatContextMenu(item) }
+                    ForEach(store.conversations) { item in chatRow(item) }
+
+                    // Meaning-based matches the keyword search missed — a separate,
+                    // clearly-labelled section, never blended into the results above.
+                    if !store.relatedConversations.isEmpty {
+                        sectionLabel("Related")
+                        ForEach(store.relatedConversations) { item in chatRow(item) }
+                    } else if store.isSearchingRelated {
+                        relatedSearchingRow
                     }
                 }
             }
         }
+    }
+
+    private var relatedSearchingRow: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.mini)
+            Text("Finding related…")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func chatRow(_ item: ConversationListItem) -> some View {
+        ChatHistoryRow(
+            title: item.title.isEmpty ? "Untitled" : item.title,
+            preview: item.preview.isEmpty ? "No messages yet" : item.preview,
+            time: Self.relativeTime(item.updatedAt),
+            isActive: item.id == store.activeConversationID,
+            isEditing: editingID == item.id,
+            draftTitle: $draftTitle,
+            renameFocused: $renameFocused,
+            onCommitRename: commitRename,
+            onCancelRename: cancelRename,
+            onRename: { beginRename(item) },
+            onDelete: { store.delete(item.id) }
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if editingID != item.id { store.activeConversationID = item.id }
+        }
+        .contextMenu { chatContextMenu(item) }
     }
 
     @ViewBuilder

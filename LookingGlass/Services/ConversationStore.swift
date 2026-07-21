@@ -21,8 +21,19 @@ import GRDB
 @MainActor
 final class ConversationStore: ObservableObject {
     /// Chats for the current view: independent chats in root, the project's chats
-    /// in project view. Newest first, honoring `searchText`.
+    /// in project view. Newest first, honoring `searchText`. This is the pristine
+    /// keyword (FTS + title) result — semantic search never touches it.
     @Published private(set) var conversations: [ConversationListItem] = []
+
+    /// Semantic-only matches for the active search — conversations whose *meaning*
+    /// matches but which the keyword search missed. Rendered as a separate, clearly
+    /// labelled "Related" section beneath `conversations`, never blended in. Empty
+    /// when idle, when meaning-based search is off, or when nothing clears threshold.
+    @Published private(set) var relatedConversations: [ConversationListItem] = []
+
+    /// True while the async semantic pass for the current search is in flight — drives
+    /// a small "Finding related…" indicator so search never feels like it hung.
+    @Published private(set) var isSearchingRelated = false
 
     /// Projects shown in the root view's projects section (search-filtered).
     @Published private(set) var projects: [ProjectListItem] = []
@@ -52,6 +63,28 @@ final class ConversationStore: ObservableObject {
 
     private let dbQueue: DatabaseQueue
 
+    /// In-flight semantic ranking for the current search; cancelled when the search
+    /// text changes so a fast typist never sees a stale result overwrite a newer one.
+    private var rankTask: Task<Void, Never>?
+
+    /// Minimum cosine for a conversation to appear in the "Related" section.
+    /// Calibrated 2026-07-21 on real history (39 convs, prefixed conversation-level
+    /// vectors): genuine descriptive wins land ~0.35–0.58 ("pictures of a dog" → beagle
+    /// chats 0.42), noise floor ~0.11–0.25. 0.35 catches the wins, stays quiet on noise.
+    private static let semanticThreshold: Float = 0.35
+    /// Cap on Related results — a short, high-signal list, not a flood.
+    private static let semanticNeighborCap = 6
+
+    /// Whether meaning-based (semantic) search is enabled. Off ⇒ pure FTS, and the
+    /// embedding/backfill work never runs. **Defaults OFF (2026-07-21):** the raw-content
+    /// embedding only half-works — great for content-rich chats, blind to thin/roleplay
+    /// ones (concepts like "Superhero"/"Butler" miss). Plumbing kept; re-enable once the
+    /// Feature-B @Generable *summary* path lands (embed a distilled summary, not raw text).
+    private static var semanticEnabled: Bool {
+        UserDefaults.standard.object(forKey: "semanticSearchEnabled")
+            .map { ($0 as? Bool) ?? false } ?? false
+    }
+
     init() {
         dbQueue = Self.makeQueue()
         do {
@@ -60,6 +93,7 @@ final class ConversationStore: ObservableObject {
             print("[store] migration failed: \(error)")
         }
         reload()
+        backfillEmbeddings()   // embed any history that predates semantic search
     }
 
     // MARK: - Navigation
@@ -117,6 +151,7 @@ final class ConversationStore: ObservableObject {
             print("[store] appendMessage failed: \(error)")
         }
         reload()
+        scheduleConversationEmbedding(conversationID)
     }
 
     /// Give a conversation a custom title. No-op on empty/whitespace input so a
@@ -133,6 +168,7 @@ final class ConversationStore: ObservableObject {
             print("[store] rename failed: \(error)")
         }
         reload()
+        scheduleConversationEmbedding(conversationID)   // title is part of the gist
     }
 
     /// The per-chat model override, or nil if the chat follows the global default.
@@ -308,6 +344,23 @@ final class ConversationStore: ObservableObject {
         } else {
             projects = []
         }
+
+        // The keyword paint above (`conversations`) stays pristine. When searching with
+        // meaning-based search on, an async pass fills the SEPARATE `relatedConversations`
+        // section with semantic-only matches. Idle / disabled ⇒ no Related section.
+        rankTask?.cancel()
+        if trimmed.isEmpty || !Self.semanticEnabled {
+            rankTask = nil
+            isSearchingRelated = false
+            if !relatedConversations.isEmpty { relatedConversations = [] }
+        } else {
+            let keywordIDs = matchIDs ?? []
+            let scope = activeProjectID
+            isSearchingRelated = true
+            rankTask = Task { [weak self] in
+                await self?.computeRelated(query: trimmed, keywordIDs: keywordIDs, scope: scope)
+            }
+        }
     }
 
     private func fetchConversations(projectScope: UUID?, restrictTo ids: Set<String>?) -> [ConversationListItem] {
@@ -405,6 +458,185 @@ final class ConversationStore: ObservableObject {
             for row in rows { if let pid: String = row["project_id"] { result.insert(pid) } }
         }
         return result
+    }
+
+    // MARK: - Semantic embeddings (conversation-level)
+
+    /// Recompute this conversation's semantic embedding in the background. The gist =
+    /// title + the user's messages (topic-bearing text); an unchanged gist is skipped
+    /// via a content hash. No-op when meaning-based search is off.
+    private func scheduleConversationEmbedding(_ conversationID: UUID) {
+        guard Self.semanticEnabled else { return }
+        let queue = dbQueue
+        Task.detached(priority: .utility) {
+            await Self.refreshConversationEmbedding(dbQueue: queue, conversationID: conversationID)
+        }
+    }
+
+    /// Embed every conversation whose gist changed or was never embedded. Background,
+    /// off init; resumes across launches (the tag/hash check skips current rows).
+    func backfillEmbeddings() {
+        guard Self.semanticEnabled else { return }
+        let queue = dbQueue
+        Task.detached(priority: .background) {
+            guard await SemanticSearchService.shared.isAvailable else { return }
+            for id in Self.allConversationIDs(dbQueue: queue) {
+                await Self.refreshConversationEmbedding(dbQueue: queue, conversationID: id)
+            }
+        }
+    }
+
+    /// The heavy path, fully off the main actor: read the gist, skip if the stored
+    /// vector is already current (same tag + same content hash), else embed (as a
+    /// retrieval document) and store.
+    nonisolated private static func refreshConversationEmbedding(dbQueue: DatabaseQueue,
+                                                                 conversationID: UUID) async {
+        guard await SemanticSearchService.shared.isAvailable,
+              let gist = conversationGist(dbQueue: dbQueue, conversationID: conversationID)
+        else { return }
+        let hash = stableHash(gist.title + "\u{01}" + gist.text)
+        let tag = await SemanticSearchService.shared.activeTag
+        if let stored = storedEmbeddingMeta(dbQueue: dbQueue, conversationID: conversationID),
+           stored.tag == tag, stored.hash == hash { return }   // already current
+        guard let result = await SemanticSearchService.shared.embedConversation(title: gist.title, text: gist.text)
+        else { return }
+        storeConversationEmbedding(dbQueue: dbQueue, conversationID: conversationID,
+                                   vector: result.vector, tag: result.tag, hash: hash)
+    }
+
+    /// A conversation's topic-bearing gist: title + the user's messages (the user's
+    /// framing carries the subject; assistant boilerplate is left out to avoid the
+    /// "Hey Alice"/"Sure thing!" noise). nil when there's nothing to embed yet.
+    nonisolated private static func conversationGist(dbQueue: DatabaseQueue,
+                                                     conversationID: UUID) -> (title: String, text: String)? {
+        var title = ""
+        var userText = ""
+        try? dbQueue.read { db in
+            title = (try String.fetchOne(db, sql: "SELECT title FROM conversations WHERE id = ?",
+                                         arguments: [conversationID.uuidString])) ?? ""
+            let msgs = try String.fetchAll(db, sql: """
+                SELECT content FROM messages
+                WHERE conversation_id = ? AND role = 'user' AND content != ''
+                ORDER BY position ASC
+                """, arguments: [conversationID.uuidString])
+            userText = msgs.joined(separator: "\n")
+        }
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = String(userText.prefix(2000))
+        if t.isEmpty && text.isEmpty { return nil }
+        return (t, text)
+    }
+
+    nonisolated private static func storeConversationEmbedding(dbQueue: DatabaseQueue, conversationID: UUID,
+                                                               vector: [Float], tag: String, hash: Int64) {
+        let blob = SemanticSearchService.data(from: vector)
+        let now = Int(Date().timeIntervalSince1970)
+        do {
+            try dbQueue.write { db in
+                try db.execute(sql: """
+                    INSERT OR REPLACE INTO conversation_embeddings
+                        (conversation_id, vector, dim, model_tag, content_hash, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, arguments: [conversationID.uuidString, blob, vector.count, tag, hash, now])
+            }
+        } catch {
+            print("[store] storeConversationEmbedding failed: \(error)")
+        }
+    }
+
+    nonisolated private static func storedEmbeddingMeta(dbQueue: DatabaseQueue,
+                                                        conversationID: UUID) -> (tag: String, hash: Int64)? {
+        (try? dbQueue.read { db -> (String, Int64)? in
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT model_tag, content_hash FROM conversation_embeddings WHERE conversation_id = ?
+                """, arguments: [conversationID.uuidString]) else { return nil }
+            let tag: String = row["model_tag"] ?? ""
+            let hash: Int64 = row["content_hash"] ?? 0
+            return (tag, hash)
+        }) ?? nil
+    }
+
+    nonisolated private static func allConversationIDs(dbQueue: DatabaseQueue) -> [UUID] {
+        let rows = (try? dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT id FROM conversations")
+        }) ?? []
+        return rows.compactMap { UUID(uuidString: $0) }
+    }
+
+    /// FNV-1a — a *stable* hash (Swift's `hashValue` is per-run randomized and would
+    /// force a re-embed every launch).
+    nonisolated private static func stableHash(_ s: String) -> Int64 {
+        var h: UInt64 = 0xcbf29ce484222325
+        for byte in s.utf8 { h = (h ^ UInt64(byte)) &* 0x100000001b3 }
+        return Int64(bitPattern: h)
+    }
+
+    // MARK: - Semantic search (Related section)
+
+    /// Fill `relatedConversations` with semantic-only matches: embed the query
+    /// (retrieval-prefixed), scan conversation vectors OFF the main thread, keep the
+    /// ones the keyword search missed that clear threshold, capped short. Clears
+    /// Related when embeddings are unavailable; leaves it untouched if the search
+    /// already moved on (a newer pass will set it).
+    private func computeRelated(query: String, keywordIDs: Set<String>, scope: UUID?) async {
+        guard let qvec = await SemanticSearchService.shared.embedQuery(query) else {
+            isSearchingRelated = false
+            if !relatedConversations.isEmpty { relatedConversations = [] }
+            return
+        }
+        if Task.isCancelled { return }
+
+        let queue = dbQueue
+        let tag = await SemanticSearchService.shared.activeTag
+        let scored = await Task.detached(priority: .userInitiated) {
+            Self.rankConversationVectors(dbQueue: queue, queryVector: qvec, tag: tag, scope: scope)
+        }.value
+        if Task.isCancelled { return }
+        guard query == searchText.trimmingCharacters(in: .whitespacesAndNewlines) else { return }
+
+        // Semantic-only (drop keyword hits — they're in the main list), ≥ threshold, capped.
+        let hits = scored
+            .filter { !keywordIDs.contains($0.id) && $0.score >= Self.semanticThreshold }
+            .sorted { $0.score > $1.score }
+            .prefix(Self.semanticNeighborCap)
+        let scoreByID = Dictionary(hits.map { ($0.id, $0.score) }, uniquingKeysWith: { a, _ in a })
+        let items = fetchConversations(projectScope: scope, restrictTo: Set(scoreByID.keys))
+        let ordered = items.sorted { (scoreByID[$0.id.uuidString] ?? -1) > (scoreByID[$1.id.uuidString] ?? -1) }
+
+        #if DEBUG
+        // τ-tuning aid: print cosine·title for the Related candidates from real queries.
+        let dbg = ordered.prefix(8)
+            .map { String(format: "%.3f·%@", scoreByID[$0.id.uuidString] ?? -1, String($0.title.prefix(22))) }
+            .joined(separator: " | ")
+        print("[semsearch] related τ=\(Self.semanticThreshold) of \(scored.count) scanned → \(dbg)")
+        #endif
+
+        relatedConversations = ordered
+        isSearchingRelated = false
+    }
+
+    /// Cosine of the query against every in-scope conversation vector (active tag).
+    /// `nonisolated` + `dbQueue` passed in ⇒ runs off the main thread.
+    nonisolated private static func rankConversationVectors(dbQueue: DatabaseQueue, queryVector: [Float],
+                                                            tag: String, scope: UUID?) -> [(id: String, score: Float)] {
+        let whereClause = scope == nil ? "c.project_id IS NULL" : "c.project_id = ?"
+        let args: StatementArguments = scope.map { [tag, $0.uuidString] } ?? [tag]
+        var out: [(id: String, score: Float)] = []
+        try? dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT e.conversation_id AS cid, e.vector AS vec
+                FROM conversation_embeddings e
+                JOIN conversations c ON c.id = e.conversation_id
+                WHERE e.model_tag = ? AND \(whereClause)
+                """, arguments: args)
+            for row in rows {
+                guard let cid: String = row["cid"], let data: Data = row["vec"] else { continue }
+                let v = SemanticSearchService.vector(from: data)
+                guard v.count == queryVector.count else { continue }
+                out.append((cid, SemanticSearchService.cosine(queryVector, v)))
+            }
+        }
+        return out
     }
 
     // MARK: - Helpers
@@ -544,6 +776,43 @@ final class ConversationStore: ObservableObject {
                 DELETE FROM messages
                 WHERE conversation_id NOT IN (SELECT id FROM conversations)
                 """)
+        }
+        // Semantic-search vectors: one on-device embedding per message, stored as a
+        // Float32 BLOB alongside a `model_tag` (the source that produced it) so a
+        // model change can invalidate + re-embed stale rows. Separate table (not a
+        // messages column) keeps normal message reads lean and makes backfill/re-embed
+        // a clean upsert. FK-cascades with the message; .immediate FK-check for the
+        // same reason as v3/v4 — this migration touches no existing rows.
+        migrator.registerMigration("v6_message_embeddings", foreignKeyChecks: .immediate) { db in
+            try db.execute(sql: """
+                CREATE TABLE message_embeddings (
+                    message_id TEXT PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+                    vector     BLOB    NOT NULL,
+                    dim        INTEGER NOT NULL,
+                    model_tag  TEXT    NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+                """)
+            try db.execute(sql: "CREATE INDEX idx_message_embeddings_tag ON message_embeddings(model_tag);")
+        }
+        // Semantic search moved from per-message to per-conversation embeddings: a chat
+        // now matches on its overall topic (title + user messages), not one lucky message
+        // — which was the source of the muddy results. Drop the v6 per-message table and
+        // store one vector per conversation, with a content hash to skip unchanged re-embeds.
+        // .immediate FK-check (touches no existing rows).
+        migrator.registerMigration("v7_conversation_embeddings", foreignKeyChecks: .immediate) { db in
+            try db.execute(sql: "DROP TABLE IF EXISTS message_embeddings;")
+            try db.execute(sql: """
+                CREATE TABLE conversation_embeddings (
+                    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+                    vector       BLOB    NOT NULL,
+                    dim          INTEGER NOT NULL,
+                    model_tag    TEXT    NOT NULL,
+                    content_hash INTEGER NOT NULL,
+                    updated_at   INTEGER NOT NULL
+                );
+                """)
+            try db.execute(sql: "CREATE INDEX idx_conversation_embeddings_tag ON conversation_embeddings(model_tag);")
         }
         return migrator
     }

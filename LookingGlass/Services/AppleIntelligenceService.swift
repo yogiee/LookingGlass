@@ -51,16 +51,4 @@ final class AppleIntelligenceService {
         let summary = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
         return summary.isEmpty ? nil : summary
     }
-
-    /// Expand a search query with synonyms for better full-text search coverage.
-    /// Returns nil for very short queries where expansion adds no value.
-    func expandSearchQuery(_ query: String) async -> String? {
-        guard isAvailable, query.count > 3 else { return nil }
-        let session = LanguageModelSession(
-            instructions: "Expand this search query with 2–3 synonyms or closely related terms, space-separated. Return only the expanded query, nothing else."
-        )
-        guard let response = try? await session.respond(to: query) else { return nil }
-        let expanded = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        return expanded.isEmpty ? nil : expanded
-    }
 }
