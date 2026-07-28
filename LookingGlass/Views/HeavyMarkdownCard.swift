@@ -30,6 +30,21 @@ enum DocumentSplit {
     }
 }
 
+/// Shared identity for the document surfaces (composing card → finished card →
+/// report viewer). Deliberately NOT `Color.accentColor`: tool-call cards already use
+/// the accent, and side by side in the transcript the two read as the same object.
+/// A fixed hue also survives the user changing their system accent.
+enum DocumentCardStyle {
+    static let tint = Color.purple
+    static let cornerRadius: CGFloat = 14
+    /// Wash over the glass. Deliberately faint — this needs to read as "a different
+    /// KIND of card" on a glance, not as a coloured button. The border carries most
+    /// of the identity; the fill is just enough to tint the material.
+    static let fill = tint.opacity(0.07)
+    static let border = tint.opacity(0.20)
+    static let borderHover = tint.opacity(0.42)
+}
+
 /// Live placeholder while a document streams in: the raw markdown never floods
 /// the bubble — a counter ticks up until the finished card takes over.
 struct ComposingDocumentCard: View {
@@ -49,14 +64,21 @@ struct ComposingDocumentCard: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
+        // Tinted from the start so the composing → finished transition doesn't
+        // change colour under the user mid-stream.
+        .glassEffect(.regular.tint(DocumentCardStyle.fill),
+                     in: .rect(cornerRadius: DocumentCardStyle.cornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: DocumentCardStyle.cornerRadius, style: .continuous)
+                .strokeBorder(DocumentCardStyle.border, lineWidth: 1)
+        )
     }
 }
 
 /// Stand-in bubble for heavy markdown (huge docs, table-dumps): the chat scroll
-/// path never mounts MarkdownUI for these — LazyVStack re-instantiates bubbles on
-/// every viewport crossing, so a heavy mount re-pays full layout on each scroll
-/// past. Instead this lightweight preview card opens the WKWebView report panel,
+/// path never mounts MarkdownUI for these, because swift-markdown-ui lays out
+/// synchronously on the main thread and a big document stalls it outright.
+/// Instead this lightweight preview card opens the WKWebView report panel,
 /// where WebKit lays the document out off-process. Replaces the old
 /// plain-monospace fallback (see decision_report_viewer_webview).
 struct HeavyMarkdownCard: View {
@@ -71,7 +93,7 @@ struct HeavyMarkdownCard: View {
                 HStack(spacing: 7) {
                     Image(systemName: "doc.richtext")
                         .font(.system(size: 13))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(DocumentCardStyle.tint)
                     Text("Formatted response")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(.primary)
@@ -93,17 +115,18 @@ struct HeavyMarkdownCard: View {
                         .font(.system(size: 9, weight: .semibold))
                 }
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(DocumentCardStyle.tint)
             }
             .padding(14)
             .frame(maxWidth: 520, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
+        .glassEffect(.regular.tint(DocumentCardStyle.fill),
+                     in: .rect(cornerRadius: DocumentCardStyle.cornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(hovering ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.10),
+            RoundedRectangle(cornerRadius: DocumentCardStyle.cornerRadius, style: .continuous)
+                .strokeBorder(hovering ? DocumentCardStyle.borderHover : DocumentCardStyle.border,
                               lineWidth: 1)
         )
         .onHover { hovering = $0 }
