@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -7,6 +8,10 @@ struct SettingsSystemTab: View {
     @AppStorage("enabledTools") private var enabledToolsJSON = ""
     @AppStorage("appleIntelligenceEnabled") private var appleIntelligenceEnabled = true
     @AppStorage("semanticSearchEnabled") private var semanticSearchEnabled = false
+    @AppStorage(SpeechOutputService.Keys.enabled) private var voiceOutputEnabled = true
+    @AppStorage(SpeechOutputService.Keys.voice) private var ttsVoiceIdentifier = ""
+    @AppStorage(SpeechOutputService.Keys.rate) private var ttsRate = 0.5
+    @ObservedObject private var speech = SpeechOutputService.shared
     @AppStorage("ocrPastedImages") private var ocrPastedImages = true
     @ObservedObject private var upscaler = SuperResolutionService.shared
     @AppStorage("filesRoot") private var filesRoot = ""
@@ -21,6 +26,8 @@ struct SettingsSystemTab: View {
 
     @State private var tools: [ToolInfo] = []
     @State private var loadingTools = true
+    /// Enumerated once — `speechVoices()` returns ~180 entries across 44 locales.
+    @State private var voices: [AVSpeechSynthesisVoice] = []
     @State private var promptExpanded = false
     @State private var showingPromptImporter = false
 
@@ -52,6 +59,7 @@ struct SettingsSystemTab: View {
             connectionSection
             filesSection
             appleIntelligenceSection
+            voiceSection
             semanticSearchSection
             imagesSection
             toolsSection
@@ -59,6 +67,105 @@ struct SettingsSystemTab: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .task { await loadTools() }
+        .onAppear { voices = SpeechOutputService.selectableVoices() }
+        // Downloading a voice happens in System Settings, so the new one only exists
+        // once we come back — re-enumerate on reactivation rather than showing a
+        // stale list right after the user acted on the hint below.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification
+        )) { _ in
+            voices = SpeechOutputService.selectableVoices()
+        }
+    }
+
+    // MARK: Voice
+
+    private var voiceSection: some View {
+        Section("Voice") {
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Read aloud", isOn: $voiceOutputEnabled)
+                Text("Adds a speaker button to Alice's messages. On-device — nothing is sent anywhere.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+
+            if voiceOutputEnabled {
+                voicePicker
+                rateSlider
+                previewRow
+                if SpeechOutputService.onlyDefaultQualityInstalled {
+                    betterVoicesHint
+                }
+            }
+        }
+    }
+
+    private var voicePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Picker("Voice", selection: $ttsVoiceIdentifier) {
+                Text("Automatic").tag("")
+                Divider()
+                ForEach(voices, id: \.identifier) { voice in
+                    Text("\(voice.name) · \(SpeechOutputService.qualityLabel(voice.quality)) · \(voice.language)")
+                        .tag(voice.identifier)
+                }
+            }
+            if ttsVoiceIdentifier.isEmpty, let auto = SpeechOutputService.bestAvailableVoice() {
+                Text("Automatic picks the best installed voice — currently \(auto.name) (\(auto.language)).")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var rateSlider: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Speaking Rate")
+                Spacer()
+                Text(String(format: "%.2f×", ttsRate / Double(AVSpeechUtteranceDefaultSpeechRate)))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            // The API range is 0…1 but the extremes are unusable; this band spans
+            // "deliberate" to "brisk" around the system default of 0.5.
+            Slider(value: $ttsRate, in: 0.35...0.65, step: 0.01)
+        }
+    }
+
+    private var previewRow: some View {
+        HStack {
+            Button {
+                SpeechOutputService.shared.toggle(Self.voiceSample, id: SpeechOutputService.previewID)
+            } label: {
+                Label(
+                    speech.isSpeaking(SpeechOutputService.previewID) ? "Stop" : "Preview",
+                    systemImage: speech.isSpeaking(SpeechOutputService.previewID)
+                        ? "stop.fill" : "play.fill"
+                )
+            }
+            Spacer()
+        }
+    }
+
+    // Plain, immediately parseable prose — a preview exists to let you judge the
+    // voice, not to decode the words. (The original opened on "Curiouser and
+    // curiouser", which spoken cold reads as a nonsense syllable said twice.)
+    private static let voiceSample =
+        "This is how I'll sound when I read something back to you. "
+        + "Long answers, short ones, whatever you send my way."
+
+    private var betterVoicesHint: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Only compact voices are installed. Enhanced and Premium voices are a free download and sound dramatically more natural.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Button("Get Better Voices…") { SpeechOutputService.openVoiceDownloads() }
+                .font(.system(size: 11))
+            Text("System Settings → Accessibility → Spoken Content → System Voice → Manage Voices")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+        }
     }
 
     // MARK: Personality

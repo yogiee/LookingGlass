@@ -43,18 +43,35 @@ struct MessageBubble: View, Equatable {
     // literal text next to the rendered image.
     private var displayContent: String { ImagePathScanner.stripMarkers(message.content) }
 
-    /// swift-markdown-ui renders synchronously on the main thread and STALLS on very large docs / big
-    /// tables (froze the app 2026-07-08 on table-heavy model output) — and LazyVStack re-instantiates
-    /// bubbles on every viewport crossing, so a heavy mount re-pays that cost on each scroll past.
-    /// Above these thresholds the bubble shows a snippet card instead; the full document renders in
-    /// the WKWebView report panel, where WebKit lays it out off the main thread.
+    /// swift-markdown-ui renders synchronously on the main thread and STALLS on very large docs.
+    /// Above the threshold the bubble shows a snippet card instead; the full document renders in the
+    /// WKWebView report panel, where WebKit lays it out off the main thread.
+    ///
+    /// Tables take that route unconditionally, at any size. `TableView` always applies
+    /// `tableDecoration`, which writes a bounds anchor per cell and reads them all back inside a
+    /// `GeometryReader` whose output feeds the same layout pass that produced them — a feedback
+    /// cycle that can fail to converge and wedge the main thread outright. A plain 6×6 weather table
+    /// hung the app on 2026-07-26, well under the old ">10 rows" bar. Size thresholds don't help
+    /// because the cost isn't volume, it's the cycle; the smallest real table can hang.
+    /// (The chat list is a plain VStack now — see ChatView.messageList — which removes the lazy
+    /// item-phase half of that hang, but the anchor cycle inside `TableView` is its own problem.)
     private var isHeavyMarkdown: Bool {
         let c = displayContent
-        if c.count > 4000 { return true }
-        var tableRows = 0
-        for line in c.split(separator: "\n") where line.first(where: { !$0.isWhitespace }) == "|" {
-            tableRows += 1
-            if tableRows > 10 { return true }
+        return c.count > 4000 || Self.containsTable(c)
+    }
+
+    /// True if the text contains a GFM table, spotted by its delimiter row (`|---|:--:|`) — the one
+    /// line that can't be confused with prose that merely uses a pipe. Fenced code is skipped so a
+    /// table *inside* a code sample doesn't demote an otherwise light message.
+    private static func containsTable(_ text: String) -> Bool {
+        var inFence = false
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("```") || t.hasPrefix("~~~") { inFence.toggle(); continue }
+            if inFence { continue }
+            // Delimiter rows hold nothing but dashes, colons, pipes and spaces.
+            guard t.contains("|"), t.contains("-") else { continue }
+            if t.allSatisfy({ "-:| \t".contains($0) }) { return true }
         }
         return false
     }
@@ -203,8 +220,15 @@ struct MessageBubble: View, Equatable {
                             .help("Re-run this on the cloud specialist for more depth")
                             .opacity(isHovering && !message.isStreaming ? 1 : 0)
                         }
-                        MessageActions(content: message.content, projectDir: projectDir)
-                            .opacity(isHovering && !message.isStreaming && !message.content.isEmpty ? 1 : 0)
+                        // Reveal is passed in rather than applied here: the row keeps
+                        // itself visible while it's speaking, so Stop stays reachable
+                        // after the pointer leaves the bubble.
+                        MessageActions(
+                            content: message.content,
+                            messageID: message.id,
+                            projectDir: projectDir,
+                            revealed: isHovering && !message.isStreaming && !message.content.isEmpty
+                        )
                     }
                 }
             }
@@ -368,15 +392,38 @@ struct AvatarView: View {
 
 struct MessageActions: View {
     let content: String
+    let messageID: UUID
     /// Non-nil only when the chat lives in a project → enables "Save to memory".
     var projectDir: String? = nil
+    /// Hover state from the parent bubble. The row can override it — see `isVisible`.
+    var revealed: Bool = true
     @State private var copied = false
     @State private var savedToMemory = false
     @State private var savingToMemory = false
+    /// Leaf-level subscription on purpose: MessageBubble is `.equatable()` to keep
+    /// heavy markdown off the re-render path, so the speech singleton is observed
+    /// here — a small view — rather than in the bubble.
+    @ObservedObject private var speech = SpeechOutputService.shared
+    @AppStorage(SpeechOutputService.Keys.enabled) private var voiceEnabled = true
     private let client = SidecarClient()
+
+    private var isSpeakingThis: Bool { speech.isSpeaking(messageID.uuidString) }
+
+    /// Visible on hover, and always while this message is being read — otherwise
+    /// moving the pointer away would hide the only Stop control.
+    private var isVisible: Bool { revealed || isSpeakingThis }
 
     var body: some View {
         HStack(spacing: 2) {
+            if voiceEnabled {
+                ActionButton(
+                    icon: isSpeakingThis ? "stop.fill" : "speaker.wave.2",
+                    label: isSpeakingThis ? "Stop" : "Read aloud"
+                ) {
+                    speech.toggle(content, id: messageID.uuidString)
+                }
+                .foregroundStyle(isSpeakingThis ? Color.accentColor : Color.secondary)
+            }
             ActionButton(icon: copied ? "checkmark" : "doc.on.doc", label: "Copy") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(content, forType: .string)
@@ -401,6 +448,10 @@ struct MessageActions: View {
             }
         }
         .padding(.trailing, 2)
+        .opacity(isVisible ? 1 : 0)
+        // Opacity alone would leave the buttons invisible but still clickable.
+        .allowsHitTesting(isVisible)
+        .animation(.easeInOut(duration: 0.18), value: isVisible)
     }
 
     private func saveToMemory() {
