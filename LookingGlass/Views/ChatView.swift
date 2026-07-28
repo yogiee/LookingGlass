@@ -531,7 +531,14 @@ struct ChatView: View {
             ScrollView {
                 HStack(spacing: 0) {
                     Spacer(minLength: 50)
-                    LazyVStack(alignment: .leading, spacing: 20) {
+                    // NOT LazyVStack. Every hard freeze we've sampled — the GFM-table
+                    // hang and the read-aloud hang — wedged inside
+                    // LazyLayoutViewCache.updateItemPhases(), which posts a graph
+                    // mutation that re-dirties the graph and never converges with
+                    // variable-height bubbles under .defaultScrollAnchor(.bottom).
+                    // Conversations here top out around 50 messages, so eager layout
+                    // is cheap. Do not "optimise" this back to lazy.
+                    VStack(alignment: .leading, spacing: 20) {
                         ForEach(viewModel.messages) { msg in
                             if msg.role == .system {
                                 SystemNoticeRow(text: msg.content)
