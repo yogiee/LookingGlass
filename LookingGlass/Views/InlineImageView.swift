@@ -62,33 +62,121 @@ final class ImageViewerState: ObservableObject {
 
 /// A rounded, size-constrained thumbnail for an on-disk image. Tapping opens the
 /// full-window lightbox.
+/// Mutable box for a value that changes constantly but is only ever *read* on demand.
+///
+/// Writing to `@State` invalidates the view. The thumbnail's on-screen rect changes on
+/// every scroll frame but is needed only at tap time (to start the lightbox hero from
+/// the right place), so storing it in `@State` re-rendered every visible image ~60×/sec
+/// for nothing — the dominant cost when scrolling an image-heavy conversation.
+/// A reference held by `@State` keeps the identity stable while writes stay invisible
+/// to the graph.
+private final class FrameBox {
+    var rect: CGRect = .zero
+}
+
 struct InlineImageView: View {
     let path: String
     @EnvironmentObject private var viewer: ImageViewerState
-    @State private var frameInWindow: CGRect = .zero
+    @State private var frameBox = FrameBox()
 
     private var resolvedPath: String { (path as NSString).expandingTildeInPath }
-    private var image: NSImage? { NSImage(contentsOfFile: resolvedPath) }
+
+    /// Held in state, never computed in `body`: decoding is far too expensive to
+    /// re-run per render pass (see ImageThumbnailCache).
+    @State private var image: NSImage?
+    /// Distinguishes "still decoding" from "this file will never load", so a
+    /// failure shows a visible broken-image box instead of nothing at all.
+    @State private var loadFailed = false
+
+    init(path: String) {
+        self.path = path
+        // Seed synchronously so an already-built thumbnail draws on the FIRST frame —
+        // otherwise every cached image still flashes the placeholder for a frame,
+        // because `.task` only runs after the initial render.
+        _image = State(initialValue: ImageThumbnailCache.cached((path as NSString).expandingTildeInPath))
+    }
 
     var body: some View {
-        Group {
-            if let image {
-                Button { viewer.show(resolvedPath, from: frameInWindow) } label: {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: 360, maxHeight: 360)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-                        )
-                }
-                .buttonStyle(.plain)
-                .help("Click to view")
-                // Track the thumbnail's on-screen rect so the lightbox can grow from it.
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frameInWindow = $0 }
+        // ⛔️ DO NOT collapse this into `Group { if let image { … } }`.
+        // With `image == nil` that yields `Group<EmptyView>`, and EmptyView has no
+        // representation in the render tree — so `.task` attached to it NEVER FIRES.
+        // The image then never loads, so the branch stays empty forever: a permanent,
+        // silent, invisible-image deadlock. `content` must always return a real view.
+        content
+            .task(id: resolvedPath) { await load() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if let image {
+            Button { viewer.show(resolvedPath, from: frameBox.rect) } label: {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 360, maxHeight: 360)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                    )
             }
+            .buttonStyle(.plain)
+            .help("Click to view")
+            // Track the thumbnail's on-screen rect so the lightbox can grow from it.
+            // ⛔️ Writes into a box, NOT @State — see FrameBox. This fires every scroll
+            // frame; a @State write here re-renders every visible image continuously.
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frameBox.rect = $0 }
+        } else {
+            placeholder
+        }
+    }
+
+    /// Shown while decoding, and kept (in failed form) when the file can't be read.
+    /// A visible box is deliberate: a silent zero-size view is exactly what made the
+    /// original regression impossible to spot.
+    private var placeholder: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color.primary.opacity(0.05))
+            .frame(width: 180, height: 180)
+            .overlay {
+                if loadFailed {
+                    VStack(spacing: 6) {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.system(size: 22))
+                        Text((resolvedPath as NSString).lastPathComponent)
+                            .font(.caption2)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(8)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+            .help(loadFailed ? "Couldn't load \(resolvedPath)" : "Loading…")
+    }
+
+    private func load() async {
+        if let hit = ImageThumbnailCache.cached(resolvedPath) {
+            image = hit
+            loadFailed = false
+            return
+        }
+        let p = resolvedPath
+        let loaded = await Task.detached(priority: .userInitiated) {
+            // ImageIO can't build a thumbnail for every format it can still decode,
+            // so fall back to a full decode rather than showing nothing.
+            ImageThumbnailCache.thumbnail(p) ?? NSImage(contentsOfFile: p)
+        }.value
+        image = loaded
+        loadFailed = (loaded == nil)
+        if loaded == nil {
+            NSLog("[InlineImageView] failed to load image at %@", p)
         }
     }
 }
@@ -216,11 +304,29 @@ struct LightboxView: View {
             return CGSize(width: originalPixelSize.width * resizeScale,
                           height: originalPixelSize.height * resizeScale)
         }
+        // Prefer the file's true pixel size over the current bitmap's. The viewer shows a
+        // low-res thumbnail first and swaps in the full decode a moment later; keying layout
+        // to the bitmap would re-fit and visibly jump at that swap.
+        if originalPixelSize != .zero { return originalPixelSize }
         return image?.size ?? .zero
     }
     private var previewKey: String { "\(resizeMode)_\(cropMode)_\(sliderPos)_\(sharpen)" }
     private var displayScale: CGFloat { fitScale * zoom }
     private var isZoomed: Bool { zoom > 1.0001 }
+
+    /// Full-resolution decode that actually finishes here, off the caller's thread.
+    ///
+    /// `NSImage(contentsOfFile:)` only reads the file — decoding is deferred to the first
+    /// draw. Calling it on the main thread therefore moves the cost INTO the present
+    /// animation instead of avoiding it. `kCGImageSourceShouldCacheImmediately` forces the
+    /// decode to happen right here, so the swap onto the main thread is pure assignment.
+    nonisolated static func decodeFully(_ path: String) -> NSImage? {
+        guard let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let cg = CGImageSourceCreateImageAtIndex(
+                  src, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
+        else { return NSImage(contentsOfFile: path) }   // formats ImageIO won't open
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -262,6 +368,13 @@ struct LightboxView: View {
                                 .onEnded { _ in lastZoom = zoom; if !isZoomed { resetPan() } }
                         )
                         .onHover { inside in updateCursor(hovering: inside) }
+                } else {
+                    // Only reachable when no thumbnail was cached (opened without the inline
+                    // view having rendered). The normal path shows the thumbnail instantly,
+                    // so this never flashes during an ordinary open.
+                    ProgressView()
+                        .controlSize(.large)
+                        .opacity(presented ? 1 : 0)
                 }
             }
             // Force to the window size + clip, so a zoomed image overflows-and-clips
@@ -316,14 +429,38 @@ struct LightboxView: View {
             .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { lightboxFrame = $0 }
             .onAppear {
                 areaSize = geo.size
-                baseImage = NSImage(contentsOfFile: path)
+                // Header-only read (CIImage is lazy), so this is cheap — and it lets
+                // layoutSize/fitScale settle BEFORE any bitmap exists.
                 originalPixelSize = CoreImageService.pixelSize(path: path) ?? .zero
+                // Draw the already-decoded inline thumbnail immediately. The full-res
+                // decode happens off-main in .task below and swaps in when ready.
+                //
+                // ⚠️ Do NOT put `NSImage(contentsOfFile:)` back here. It looks synchronous
+                // but defers decoding to the first DRAW — which lands inside the hero
+                // spring animation, so a 4096×4096 PNG stutters the open every time.
+                baseImage = ImageThumbnailCache.cached(path)
                 fitScale = computeFit(geo.size)
                 startScrollMonitor()
                 // Defer so fitScale + lightboxFrame settle before measuring the hero
                 // start-state, then animate to the resting (centered) state.
                 DispatchQueue.main.async {
                     withAnimation(.spring(response: 0.26, dampingFraction: 0.85)) { presented = true }
+                }
+            }
+            // Full-resolution decode, off the main thread, forced to complete before the
+            // swap so no decode cost can land on a draw.
+            .task(id: path) {
+                let p = path
+                let full = await Task.detached(priority: .userInitiated) {
+                    LightboxView.decodeFully(p)
+                }.value
+                guard let full else { return }
+                // An edit/upscale may have taken over while we were decoding.
+                guard !upscaleReview, previewImage == nil else { return }
+                baseImage = full
+                if originalPixelSize == .zero {
+                    originalPixelSize = full.size
+                    fitScale = computeFit(areaSize)
                 }
             }
             .onDisappear { stopScrollMonitor(); popCursor() }
@@ -672,6 +809,9 @@ struct LightboxView: View {
             try? FileManager.default.copyItem(at: orig, to: backup)
         }
         try? png.write(to: orig)
+        // The path is unchanged, so the inline thumbnail would keep serving the
+        // pre-upscale bitmap until eviction.
+        ImageThumbnailCache.invalidate(path)
         baseImage = NSImage(contentsOfFile: path)                       // reflect the new file
         originalPixelSize = CoreImageService.pixelSize(path: path) ?? .zero
         exitReview()
