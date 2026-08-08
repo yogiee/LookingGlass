@@ -41,7 +41,8 @@ class ChatViewModel: ObservableObject {
         researchStatus = researchReportPath != nil ? "Report ready" : nil
     }
 
-    func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?, userName: String?, mcpHintsEnabled: [String: Bool]? = nil, researchMode: Bool = false, store: ConversationStore, attachmentPath: String? = nil) {
+    func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?, userName: String?, mcpHintsEnabled: [String: Bool]? = nil, researchMode: Bool = false, store: ConversationStore, attachmentPath: String? = nil,
+              source: Message.Source = .typed, dictationOriginal: String? = nil) {
         let typed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         let text: String
         if let path = attachmentPath {
@@ -52,7 +53,8 @@ class ChatViewModel: ObservableObject {
         guard !text.isEmpty, !isStreaming else { return }
 
         inputText = ""
-        let userMessage = Message(role: .user, content: text)
+        let userMessage = Message(role: .user, content: text,
+                                  source: source, dictationOriginal: dictationOriginal)
         messages.append(userMessage)
 
         // Ensure a persisted conversation exists, then save the user's turn.
@@ -308,6 +310,12 @@ struct ChatView: View {
     /// Voice input. Observed at this level (not only in the leaf button) because
     /// the composer shows a live transcript strip while the mic is open.
     @ObservedObject private var speechInput = SpeechInputService.shared
+    /// The raw transcript of a dictation held back for review, kept so that
+    /// whatever Yogi changes before sending can be read as a correction.
+    @State private var dictationUnderReview: String?
+    /// Words the recogniser flagged, named in the review strip so a mis-tuned
+    /// confidence floor is visible rather than silent.
+    @State private var uncertainWords: [String] = []
     /// The editor had focus when the lock engaged → restore it when the turn ends
     /// (never steals focus from another field, e.g. Settings → System Prompt).
     @State private var refocusAfterStream = false
@@ -393,7 +401,22 @@ struct ChatView: View {
         }
     }
 
-    private func submit() {
+    private func submit(source: Message.Source = .typed) {
+        // A transcript held back for review and then sent is `.corrected`, not
+        // `.typed` — machine output a human verified. Keeping the pre-edit text
+        // alongside it is what makes it analysable later: a correction only
+        // means something next to what it corrected.
+        var provenance = source
+        var original: String?
+        if let pending = dictationUnderReview {
+            dictationUnderReview = nil
+            uncertainWords = []
+            provenance = .corrected
+            original = pending
+            let diff = SpokenVocabulary.differences(from: pending, to: viewModel.inputText)
+            speechInput.suppress(diff.suppressed)
+            speechInput.learn(diff.learned)
+        }
         let attachment = pendingAttachment
         pendingAttachment = nil
         pendingImage = nil
@@ -406,7 +429,9 @@ struct ChatView: View {
             mcpHintsEnabled: decodedMcpHintsEnabled(),
             researchMode: viewModel.researchMode,
             store: store,
-            attachmentPath: attachment?.path
+            attachmentPath: attachment?.path,
+            source: provenance,
+            dictationOriginal: original
         )
         // send() may have just created the conversation row — persist a pending override.
         if let override = chatModelOverride, let cid = viewModel.loadedConversationID {
@@ -636,6 +661,10 @@ struct ChatView: View {
                     ListeningStrip()
                         .transition(.opacity)
                 }
+                if !uncertainWords.isEmpty {
+                    reviewStrip
+                        .transition(.opacity)
+                }
                 if isRecognizingText {
                     ocrReadingStrip
                         .transition(.opacity)
@@ -833,12 +862,19 @@ struct ChatView: View {
                   : "Enable Deep Research mode")
             .padding(.trailing, 4)
 
-            // Dictation auto-sends. Appends rather than replaces, so speaking
-            // never discards something already typed in the composer.
-            MicButton(isDisabled: viewModel.isStreaming) { spoken in
+            // Dictation auto-sends — unless the recogniser flagged a word it
+            // doubted, in which case it lands in the composer instead and waits.
+            // The system asks for help only when it knows it needs it.
+            MicButton(isDisabled: viewModel.isStreaming) { utterance in
                 let typed = viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-                viewModel.inputText = typed.isEmpty ? spoken : typed + " " + spoken
-                submit()
+                viewModel.inputText = typed.isEmpty ? utterance.text : typed + " " + utterance.text
+                if utterance.needsReview {
+                    dictationUnderReview = utterance.text
+                    uncertainWords = utterance.uncertain
+                    inputController.focus()
+                } else {
+                    submit(source: .dictated)
+                }
             }
             .padding(.trailing, 4)
 
@@ -856,6 +892,35 @@ struct ChatView: View {
         .padding(.top, 2)
         .padding(.bottom, 8)
         .animation(.easeInOut(duration: 0.16), value: inputFocused)
+    }
+
+    /// Shown instead of auto-sending when the recogniser doubted a word. Naming
+    /// the words matters twice over: it tells Yogi where to look, and it makes a
+    /// badly tuned confidence floor obvious the moment it fires on the wrong things.
+    private var reviewStrip: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "questionmark.circle")
+                .font(.system(size: 12))
+                .foregroundStyle(.orange)
+            Text("Not sure about \(uncertainWords.joined(separator: ", ")) — edit if needed, then send.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+            Button {
+                dictationUnderReview = nil
+                uncertainWords = []
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Brief inline indicator while a pasted image is being OCR'd (usually well under a second).

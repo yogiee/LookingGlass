@@ -52,6 +52,64 @@ final class SpeechInputService: ObservableObject {
         [finalizedText, volatileText].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
+    /// A finished utterance, plus what the recogniser was unsure of.
+    struct Utterance: Sendable {
+        let text: String
+        /// Words flagged below the confidence floor. Empty when it was confident.
+        let uncertain: [String]
+        /// The cue to stop and let Yogi look before this is sent.
+        var needsReview: Bool { !uncertain.isEmpty }
+    }
+
+    /// Words the recogniser doubted during this utterance, in order of appearance.
+    private var uncertainWords: [String] = []
+
+    /// Lowest confidence seen in the last utterance, or nil when the recogniser
+    /// reported none at all. Surfaced in the mic tooltip purely so the floor can
+    /// be tuned against real numbers instead of guessed at.
+    @Published private(set) var lastMinConfidence: Double?
+
+    /// The word that scored `lastMinConfidence`.
+    ///
+    /// The score alone can't tune the floor: a weakest-word reading of 0.39
+    /// means "the floor is about right" if that word was transcribed correctly,
+    /// and "the floor is far too low" if it wasn't. Naming the word is what
+    /// makes the number actionable at a glance.
+    @Published private(set) var lastWeakestWord: String?
+
+    /// Below this, a **content** word is worth a second look.
+    ///
+    /// Calibrated against measured values rather than guessed: in real dictation
+    /// the scores stratify by word class — filler "uh," at **0.17**, the
+    /// conjunction "but" at **0.43**, the content word "side" at **0.54**. So
+    /// correct content words sit around 0.5+, and a floor below that only ever
+    /// catches words whose confidence was never meaningful in the first place.
+    private static let confidenceFloor = 0.45
+
+    /// Never flagged, whatever they score — and never measured either.
+    ///
+    /// This is the real fix, not the threshold. The weakest word in an utterance
+    /// is almost always filler or a function word, so a plain minimum-confidence
+    /// gate reports on the words that don't matter and stays silent on the ones
+    /// that do. Excluding them is what makes a threshold mean anything, and what
+    /// makes the reported number worth tuning against.
+    private static let ignoredForConfidence: Set<String> = [
+        // Disfluencies — low confidence by nature, and no one wants them back.
+        "uhh", "umm", "err", "erm", "ahh", "hmm", "mhm", "huh", "yeah", "yep",
+        "nah", "okay", "oh", "eh",
+        // Closed-class function words (under three letters are already dropped).
+        "the", "and", "but", "for", "nor", "yet", "are", "was", "were", "that",
+        "this", "these", "those", "with", "from", "they", "them", "their",
+        "there", "then", "than", "have", "has", "had", "not", "its", "you",
+        "your", "our", "his", "her", "she", "him", "all", "any", "can", "could",
+        "would", "should", "will", "shall", "may", "might", "must", "one",
+        "into", "onto", "over", "under", "about", "after", "before", "just",
+        "also", "only", "very", "some", "such", "each", "both", "more", "most",
+        "like", "out", "off", "now", "how", "why", "who", "what", "when",
+        "where", "which", "while", "been", "being", "does", "did", "done",
+        "going", "gonna", "really", "actually", "basically", "sort", "kind",
+    ]
+
     var isListening: Bool { state == .listening }
 
     /// False when the framework can't transcribe on this machine at all — the
@@ -82,15 +140,60 @@ final class SpeechInputService: ObservableObject {
         if let stamp = vocabularyStamp, Date().timeIntervalSince(stamp) < Self.vocabularyTTL {
             return
         }
-        let corpus = await store.userMessageCorpus()
-        guard !corpus.isEmpty else { return }
+        let records = await store.userMessageCorpus()
+        guard !records.isEmpty else { return }
+
+        // ⚠ Dictated text is excluded outright. It is the recogniser's own
+        // output, and feeding it back as recognition bias is a positive feedback
+        // loop on errors: measured on real history, the misheard "Nasik"
+        // outnumbered the typed correction "Nashik" 3:1, so frequency ranking
+        // would have entrenched the mistake. Only ground truth votes.
+        let corpus = records.filter { $0.source != .dictated }.map(\.content)
+
+        harvestCorrections(from: records)
+
         // Counting and name-tagging are pure and go off the main actor; the
         // dictionary pass comes back to it because NSSpellChecker is AppKit.
         let harvested = await Task.detached(priority: .utility) {
             SpokenVocabulary.harvest(from: corpus)
         }.value
-        vocabulary = SpokenVocabulary.refine(harvested)
+
+        let refined = SpokenVocabulary.refine(harvested)
+        let blocked = Set(suppressedTerms.map { $0.lowercased() })
+        vocabulary = Self.merge(
+            learned: learnedTerms,
+            harvested: refined.filter { !blocked.contains($0.lowercased()) }
+        )
         vocabularyStamp = Date()
+    }
+
+    /// Pull corrections out of history, from both places Yogi actually makes
+    /// them: editing a flagged transcript before sending, and simply saying so
+    /// in chat afterwards.
+    private func harvestCorrections(from records: [ConversationStore.AuthoredMessage]) {
+        var learned: [String] = []
+        var suppressed: [String] = []
+
+        for record in records {
+            if record.source == .corrected, let original = record.dictationOriginal {
+                let diff = SpokenVocabulary.differences(from: original, to: record.content)
+                learned.append(contentsOf: diff.learned)
+                suppressed.append(contentsOf: diff.suppressed)
+            }
+            // Stated corrections are only trustworthy from text Yogi wrote.
+            guard record.source != .dictated else { continue }
+            for pair in SpokenVocabulary.statedCorrections(in: record.content) {
+                learned.append(pair.right)
+                suppressed.append(pair.wrong)
+            }
+        }
+
+        // Suppress first: a term corrected in one place shouldn't survive
+        // because it was learned in another.
+        suppress(suppressed)
+        learn(learned.filter { term in
+            !suppressed.contains { $0.lowercased() == term.lowercased() }
+        })
     }
 
     /// History doesn't change fast enough to justify re-mining it per press.
@@ -105,6 +208,9 @@ final class SpeechInputService: ObservableObject {
         errorMessage = nil
         finalizedText = ""
         volatileText = ""
+        uncertainWords = []
+        lastMinConfidence = nil
+        lastWeakestWord = nil
         state = .preparing
         do {
             try await beginListening()
@@ -120,8 +226,10 @@ final class SpeechInputService: ObservableObject {
     /// results keep arriving after the mic closes, so this deliberately waits
     /// rather than returning what happened to have landed already.
     @discardableResult
-    func stop() async -> String {
-        guard state == .listening || state == .preparing else { return transcript }
+    func stop() async -> Utterance {
+        guard state == .listening || state == .preparing else {
+            return Utterance(text: transcript, uncertain: uncertainWords)
+        }
         state = .finishing
 
         closeAudio()
@@ -137,7 +245,7 @@ final class SpeechInputService: ObservableObject {
         }
         await resultsTask?.value
 
-        let result = transcript
+        let result = Utterance(text: transcript, uncertain: uncertainWords)
         await teardown()
         state = .idle
         return result
@@ -233,12 +341,15 @@ final class SpeechInputService: ObservableObject {
     ///   silently censoring what Yogi said into his own assistant is wrong.
     /// - `fastResults` is off: accuracy matters more than latency here, and the
     ///   volatile stream already covers responsiveness.
+    /// - `transcriptionConfidence` is the error signal: it marks the words the
+    ///   recogniser itself doubts, which is what lets the system ask for help
+    ///   only when it needs it instead of every time.
     private func makeTranscriber(locale: Locale) -> SpeechTranscriber {
         SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
             reportingOptions: [.volatileResults],
-            attributeOptions: []
+            attributeOptions: [.transcriptionConfidence]
         )
     }
 
@@ -282,6 +393,10 @@ final class SpeechInputService: ObservableObject {
                     if result.isFinal {
                         self.finalizedText = Self.appending(text, to: self.finalizedText)
                         self.volatileText = ""
+                        // Only final results carry a settled judgement; volatile
+                        // runs are still being revised, so their confidence
+                        // would flag words the recogniser is about to fix itself.
+                        self.flagLowConfidence(in: result.text)
                     } else {
                         self.volatileText = text
                     }
@@ -290,6 +405,102 @@ final class SpeechInputService: ObservableObject {
                 self?.errorMessage = Self.message(for: error)
             }
         }
+    }
+
+    /// Collect words the recogniser scored below the floor. Confidence is a
+    /// per-run attribute, and a run can span several words, so each is split out
+    /// — a whole phrase highlighted as doubtful is not actionable feedback.
+    private func flagLowConfidence(in attributed: AttributedString) {
+        for run in attributed.runs {
+            guard let confidence = run.transcriptionConfidence else { continue }
+            let span = String(attributed[run.range].characters)
+
+            // Confidence is per-run and a run can span several words, so pull out
+            // the ones actually worth judging. A run carrying only filler or
+            // function words is skipped entirely — not flagged, and not counted
+            // toward the reported minimum, since "uh 0.17" tells us nothing.
+            let content = span
+                .split { !$0.isLetter && !$0.isNumber }
+                .map(String.init)
+                .filter { $0.count >= 3 && !Self.ignoredForConfidence.contains($0.lowercased()) }
+            guard !content.isEmpty else { continue }
+
+            // Tracked for every eligible run, not just failing ones: without it,
+            // "never flagged anything" and "the attribute is empty" look
+            // identical, and a silently dead signal is the worst outcome here.
+            if confidence <= (lastMinConfidence ?? .infinity) {
+                lastMinConfidence = confidence
+                lastWeakestWord = content.joined(separator: " ")
+            }
+
+            guard confidence < Self.confidenceFloor else { continue }
+            for word in content where !uncertainWords.contains(word) {
+                uncertainWords.append(word)
+            }
+        }
+    }
+
+    // MARK: - Learned corrections
+
+    /// Terms Yogi corrected by hand after a flagged utterance.
+    ///
+    /// Persisted separately from the history harvest on purpose: a correction
+    /// that lived only in the derived vocabulary would evaporate as soon as the
+    /// message aged out of the corpus window. This set is the actual learned
+    /// artifact — see the `direction_vocabulary_as_self_learning_seed` memory.
+    func learn(_ terms: [String]) {
+        guard !terms.isEmpty else { return }
+        var stored = UserDefaults.standard.stringArray(forKey: Keys.learnedTerms) ?? []
+        for term in terms where !stored.contains(term) { stored.append(term) }
+        if stored.count > Self.learnedTermLimit {
+            stored.removeFirst(stored.count - Self.learnedTermLimit)
+        }
+        UserDefaults.standard.set(stored, forKey: Keys.learnedTerms)
+        // Apply immediately — the next utterance should already benefit rather
+        // than waiting for the harvest TTL to lapse.
+        let blocked = Set(suppressedTerms.map { $0.lowercased() })
+        vocabulary = Self.merge(learned: stored, harvested: vocabulary)
+            .filter { !blocked.contains($0.lowercased()) }
+    }
+
+    var learnedTerms: [String] {
+        UserDefaults.standard.stringArray(forKey: Keys.learnedTerms) ?? []
+    }
+
+    /// Misrecognitions to keep out of the vocabulary however often they appear.
+    ///
+    /// Needed because the corpus can't be trusted to police itself: an error
+    /// repeats every time it's misheard while its correction is stated once, so
+    /// frequency ranking favours the mistake. This list is what lets a single
+    /// correction beat three repetitions — and it repairs history retroactively,
+    /// since corrections already in the log get re-read on every harvest.
+    var suppressedTerms: [String] {
+        UserDefaults.standard.stringArray(forKey: Keys.suppressedTerms) ?? []
+    }
+
+    func suppress(_ terms: [String]) {
+        guard !terms.isEmpty else { return }
+        var stored = suppressedTerms
+        for term in terms where !stored.contains(term) { stored.append(term) }
+        if stored.count > Self.learnedTermLimit {
+            stored.removeFirst(stored.count - Self.learnedTermLimit)
+        }
+        UserDefaults.standard.set(stored, forKey: Keys.suppressedTerms)
+        let blocked = Set(stored.map { $0.lowercased() })
+        vocabulary = vocabulary.filter { !blocked.contains($0.lowercased()) }
+    }
+
+    /// Learned terms come first so a re-harvest can never truncate them away.
+    private static func merge(learned: [String], harvested: [String]) -> [String] {
+        var seen = Set<String>()
+        return (learned + harvested).filter { seen.insert($0).inserted }
+    }
+
+    private static let learnedTermLimit = 300
+
+    enum Keys {
+        static let learnedTerms = "sttLearnedTerms"
+        static let suppressedTerms = "sttSuppressedTerms"
     }
 
     // MARK: - Teardown

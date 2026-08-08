@@ -111,6 +111,90 @@ enum SpokenVocabulary {
         return misspelled.location == NSNotFound
     }
 
+    // MARK: - Learning from corrections
+
+    /// What changed between a dictation and the version actually sent.
+    ///
+    /// Both halves matter, and the second is the one that was missing: words
+    /// that *disappeared* are the recogniser's mistakes, and unless they're
+    /// actively suppressed they stay in the corpus out-voting their own
+    /// corrections. Measured on real history — "Nasik" appeared 3 times to
+    /// "Nashik" once, so frequency alone would have entrenched the error.
+    ///
+    /// Both sides get the same filter: ordinary dictionary words are ignored,
+    /// because rephrasing a sentence shouldn't teach the recogniser that
+    /// "actually" is special, nor un-teach it a common word.
+    @MainActor
+    static func differences(from original: String, to corrected: String)
+        -> (learned: [String], suppressed: [String]) {
+        let before = tokens(in: original)
+        let after = tokens(in: corrected)
+        let beforeKeys = Set(before.map { $0.lowercased() })
+        let afterKeys = Set(after.map { $0.lowercased() })
+        let checker = NSSpellChecker.shared
+
+        func notable(_ tokens: [String], missingFrom other: Set<String>) -> [String] {
+            var out: [String] = []
+            for token in tokens {
+                guard token.count >= 3, !other.contains(token.lowercased()) else { continue }
+                let isAcronym = token == token.uppercased()
+                guard isAcronym || !isDictionaryWord(token, checker) else { continue }
+                guard !out.contains(token) else { continue }
+                out.append(token)
+            }
+            return out
+        }
+
+        return (notable(after, missingFrom: beforeKeys), notable(before, missingFrom: afterKeys))
+    }
+
+    /// Corrections Yogi states in plain chat rather than by editing — "Nasik =
+    /// Nashik", "Igadpuri -> Igatpuri".
+    ///
+    /// This is how he actually corrected things unprompted, with the explicit
+    /// expectation that it would stick ("just noting it down... so you get them
+    /// right next time"). Nothing honoured that before, and it's the strongest
+    /// signal available: a deliberate, unambiguous statement rather than a diff
+    /// we have to interpret. One occurrence is enough — corrections get stated
+    /// once, while the errors they fix repeat.
+    @MainActor
+    static func statedCorrections(in text: String) -> [(wrong: String, right: String)] {
+        // ⚠ "should be" was tried and removed: it is ordinary English, not
+        // correction syntax, so prose like "the filename should be fixed" parsed
+        // as a correction and polluted both lists with common words. Only
+        // explicit equivalence markers survive.
+        let pattern = #"\b([\p{L}][\p{L}'’-]{2,})\s*(?:=|→|->|=>)\s*([\p{L}][\p{L}'’-]{2,})"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return []
+        }
+        let ns = text as NSString
+        let checker = NSSpellChecker.shared
+        var pairs: [(wrong: String, right: String)] = []
+
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            guard match.numberOfRanges == 3 else { continue }
+            let wrong = ns.substring(with: match.range(at: 1))
+            let right = ns.substring(with: match.range(at: 2))
+            // "x = x" is a definition, not a correction.
+            guard wrong.lowercased() != right.lowercased() else { continue }
+            // Only the *right* side is constrained — the term being learned must
+            // be worth biasing toward. Testing the left side too was tried and
+            // was wrong: Apple's dictionary contains "Nasik" (the misspelling)
+            // but not "Nashik" (the correction), so it is no oracle for which
+            // spelling is right, and requiring both rejected the exact pair this
+            // exists to capture. Suppressing an ordinary word is harmless anyway
+            // — the dictionary pass keeps those out of the vocabulary regardless.
+            guard isNotable(right, checker) else { continue }
+            pairs.append((wrong, right))
+        }
+        return pairs
+    }
+
+    @MainActor
+    private static func isNotable(_ word: String, _ checker: NSSpellChecker) -> Bool {
+        word == word.uppercased() || !isDictionaryWord(word, checker)
+    }
+
     // MARK: - Tokenising
 
     /// Letter runs only. Apostrophes and hyphens are dropped rather than kept:

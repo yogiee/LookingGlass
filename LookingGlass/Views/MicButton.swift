@@ -13,7 +13,7 @@ import SwiftUI
 /// should be a no-op, not a blank turn.
 struct MicButton: View {
     var isDisabled: Bool
-    var onTranscript: (String) -> Void
+    var onUtterance: (SpeechInputService.Utterance) -> Void
 
     @ObservedObject private var speech = SpeechInputService.shared
 
@@ -73,7 +73,12 @@ struct MicButton: View {
 
     private var helpText: String {
         if speech.isListening { return "Stop listening and send" }
-        return "Click to dictate, or hold to talk"
+        let base = "Click to dictate, or hold to talk"
+        // Exposes the raw signal so the confidence floor gets tuned against real
+        // numbers. "no confidence data" here means the attribute isn't arriving.
+        guard let low = speech.lastMinConfidence else { return base }
+        let word = speech.lastWeakestWord.map { "\"\($0)\" " } ?? ""
+        return base + String(format: " · weakest last time: %@%.2f", word, low)
     }
 
     // MARK: - Gesture
@@ -101,10 +106,12 @@ struct MicButton: View {
 
     private func finish() {
         Task {
-            let text = await speech.stop()
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let utterance = await speech.stop()
+            let trimmed = utterance.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
-            onTranscript(trimmed)
+            onUtterance(
+                SpeechInputService.Utterance(text: trimmed, uncertain: utterance.uncertain)
+            )
         }
     }
 }

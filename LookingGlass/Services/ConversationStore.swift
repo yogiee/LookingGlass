@@ -138,11 +138,12 @@ final class ConversationStore: ObservableObject {
                     SELECT COALESCE(MAX(position), -1) + 1 FROM messages WHERE conversation_id = ?
                     """, arguments: [conversationID.uuidString]) ?? 0
                 try db.execute(sql: """
-                    INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, created_at, position, model)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO messages (id, conversation_id, role, content, tool_calls_json, created_at, position, model, source, dictation_original)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, arguments: [
                         message.id.uuidString, conversationID.uuidString,
                         message.role.rawValue, message.content, toolJSON, now, nextPos, message.model,
+                        message.source?.rawValue, message.dictationOriginal,
                     ])
                 try db.execute(sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
                                arguments: [now, conversationID.uuidString])
@@ -313,7 +314,7 @@ final class ConversationStore: ObservableObject {
     func loadMessages(_ conversationID: UUID) -> [Message] {
         let rows = (try? dbQueue.read { db in
             try Row.fetchAll(db, sql: """
-                SELECT id, role, content, tool_calls_json, model
+                SELECT id, role, content, tool_calls_json, model, source, dictation_original
                 FROM messages WHERE conversation_id = ? ORDER BY position ASC
                 """, arguments: [conversationID.uuidString])
         }) ?? []
@@ -325,7 +326,9 @@ final class ConversationStore: ObservableObject {
             let content: String = row["content"] ?? ""
             let tools = Self.decodeToolCalls(row["tool_calls_json"])
             let model: String? = row["model"]
-            return Message(id: id, role: role, content: content, isStreaming: false, toolCalls: tools, model: model)
+            let source = (row["source"] as String?).flatMap(Message.Source.init(rawValue:))
+            return Message(id: id, role: role, content: content, isStreaming: false, toolCalls: tools,
+                           model: model, source: source, dictationOriginal: row["dictation_original"])
         }
     }
 
@@ -527,26 +530,45 @@ final class ConversationStore: ObservableObject {
         return (t, text)
     }
 
-    /// Every user-authored message, newest first, for spoken-vocabulary
-    /// harvesting. User messages only: we're biasing what *Yogi* says, and
-    /// Alice's replies would flood the frequency counts with her own phrasing.
-    /// Read off the main actor — this is the whole history, not one chat.
-    func userMessageCorpus(limit: Int = 3000) async -> [String] {
+    /// One user message with its provenance, for spoken-vocabulary harvesting.
+    struct AuthoredMessage: Sendable {
+        let content: String
+        let source: Message.Source
+        let dictationOriginal: String?
+    }
+
+    /// Every user-authored message, newest first. User messages only: we're
+    /// biasing what *Yogi* says, and Alice's replies would flood the frequency
+    /// counts with her own phrasing.
+    ///
+    /// Provenance travels with the text because the caller must be able to tell
+    /// ground truth from the recogniser's own output. Read off the main actor —
+    /// this is the whole history, not one chat.
+    func userMessageCorpus(limit: Int = 3000) async -> [AuthoredMessage] {
         let queue = dbQueue
         return await Task.detached(priority: .utility) {
             Self.fetchUserMessages(dbQueue: queue, limit: limit)
         }.value
     }
 
-    nonisolated private static func fetchUserMessages(dbQueue: DatabaseQueue, limit: Int) -> [String] {
-        (try? dbQueue.read { db in
-            try String.fetchAll(db, sql: """
-                SELECT content FROM messages
+    nonisolated private static func fetchUserMessages(dbQueue: DatabaseQueue, limit: Int) -> [AuthoredMessage] {
+        let rows = (try? dbQueue.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT content, source, dictation_original FROM messages
                 WHERE role = 'user' AND content != ''
                 ORDER BY rowid DESC
                 LIMIT ?
                 """, arguments: [limit])
         }) ?? []
+        return rows.map { row in
+            AuthoredMessage(
+                content: row["content"] ?? "",
+                // Pre-v8 rows predate dictation entirely, so typed is correct
+                // for them rather than merely a convenient default.
+                source: (row["source"] as String?).flatMap(Message.Source.init(rawValue:)) ?? .typed,
+                dictationOriginal: row["dictation_original"]
+            )
+        }
     }
 
     nonisolated private static func storeConversationEmbedding(dbQueue: DatabaseQueue, conversationID: UUID,
@@ -835,6 +857,17 @@ final class ConversationStore: ObservableObject {
                 );
                 """)
             try db.execute(sql: "CREATE INDEX idx_conversation_embeddings_tag ON conversation_embeddings(model_tag);")
+        }
+        // Provenance: typed / dictated / corrected, plus the pre-correction
+        // dictation. Without this the speech vocabulary harvest reads its own
+        // output back as ground truth and compounds its errors — measured on
+        // real history, "Nasik" (misheard) outnumbered "Nashik" (corrected) 3:1
+        // and would have been the spelling biased toward. NULL = pre-v8, treated
+        // as typed. .immediate FK-check for the same reason as v3/v4 — this
+        // migration touches no existing rows.
+        migrator.registerMigration("v8_message_provenance", foreignKeyChecks: .immediate) { db in
+            try db.execute(sql: "ALTER TABLE messages ADD COLUMN source TEXT")
+            try db.execute(sql: "ALTER TABLE messages ADD COLUMN dictation_original TEXT")
         }
         return migrator
     }
