@@ -64,6 +64,7 @@ class SidecarClient {
         mcpHintsEnabled: [String: Bool]? = nil,
         researchMode: Bool = false,
         specialistMode: Bool = false,
+        voiceMode: Bool = false,
         environment: [String: String]? = nil
     ) -> AsyncThrowingStream<ChatEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -100,6 +101,9 @@ class SidecarClient {
                     }
                     if researchMode { body["research_mode"] = true }
                     if specialistMode { body["specialist_mode"] = true }
+                    // Alice writes for the ear when the reply will be spoken: continuous
+                    // prose, screen-only detail fenced in `---` rules.
+                    if voiceMode { body["voice_mode"] = true }
                     // Ambient context (location + weather) → merges into Alice's "## Your environment"
                     // block. Absent when location isn't granted/known — she falls back to date/time.
                     if let environment, !environment.isEmpty { body["environment"] = environment }

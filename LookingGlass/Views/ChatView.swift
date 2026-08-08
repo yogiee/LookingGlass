@@ -42,7 +42,8 @@ class ChatViewModel: ObservableObject {
     }
 
     func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?, userName: String?, mcpHintsEnabled: [String: Bool]? = nil, researchMode: Bool = false, store: ConversationStore, attachmentPath: String? = nil,
-              source: Message.Source = .typed, dictationOriginal: String? = nil) {
+              source: Message.Source = .typed, dictationOriginal: String? = nil,
+              voiceMode: Bool = false) {
         let typed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         let text: String
         if let path = attachmentPath {
@@ -77,6 +78,7 @@ class ChatViewModel: ObservableObject {
         runTurn(history: Array(messages), model: model, ollamaHost: ollamaHost,
                 enabledTools: enabledTools, systemPrompt: systemPrompt, userName: userName,
                 mcpHintsEnabled: mcpHintsEnabled, researchMode: researchMode, specialistMode: false,
+                voiceMode: voiceMode,
                 conversationID: conversationID, isFirstTurn: isFirstTurn, titleSeed: text, store: store)
     }
 
@@ -105,6 +107,7 @@ class ChatViewModel: ObservableObject {
     private func runTurn(history: [Message], model: String?, ollamaHost: String,
                          enabledTools: [String]?, systemPrompt: String?, userName: String?,
                          mcpHintsEnabled: [String: Bool]?, researchMode: Bool, specialistMode: Bool,
+                         voiceMode: Bool = false,
                          conversationID: UUID, isFirstTurn: Bool, titleSeed: String,
                          store: ConversationStore) {
         messages.append(Message(role: .assistant, content: "", isStreaming: true))
@@ -157,6 +160,7 @@ class ChatViewModel: ObservableObject {
                     mcpHintsEnabled: mcpHintsEnabled,
                     researchMode: researchMode,
                     specialistMode: specialistMode,
+                    voiceMode: voiceMode,
                     environment: environment
                 ) {
                     guard !Task.isCancelled else { break }
@@ -496,7 +500,11 @@ struct ChatView: View {
             store: store,
             attachmentPath: attachment?.path,
             source: provenance,
-            dictationOriginal: original
+            dictationOriginal: original,
+            // Tell Alice this one will be heard, so she writes for the ear and
+            // fences anything screen-only. `narrateNextReply` is already set by
+            // `deliver` before it calls this.
+            voiceMode: narrateNextReply
         )
         // send() may have just created the conversation row — persist a pending override.
         if let override = chatModelOverride, let cid = viewModel.loadedConversationID {

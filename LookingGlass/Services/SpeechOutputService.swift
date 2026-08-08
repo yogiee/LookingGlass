@@ -93,7 +93,12 @@ final class SpeechOutputService: ObservableObject {
     /// Speak `markdown` aloud, cancelling anything already in flight.
     /// No-ops when the message reduces to nothing speakable (e.g. pure code).
     func speak(_ markdown: String, id: String) {
-        let text = SpeechText.make(from: markdown)
+        // The spoken layer, not the whole reply: bulleted comparisons and code
+        // are reading constructs and stay on screen. Applies to the per-message
+        // speaker button too, not just voice mode — what's *hearable* doesn't
+        // depend on which control started it, and the layer says out loud when
+        // it has left something behind.
+        let text = SpokenLayer.make(from: markdown)
         guard !text.isEmpty, backend.readiness.canSpeak else { return }
 
         generation += 1
