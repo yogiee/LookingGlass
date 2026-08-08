@@ -137,9 +137,7 @@ enum SpokenVocabulary {
             var out: [String] = []
             for token in tokens {
                 guard token.count >= 3, !other.contains(token.lowercased()) else { continue }
-                let isAcronym = token == token.uppercased()
-                guard isAcronym || !isDictionaryWord(token, checker) else { continue }
-                guard !out.contains(token) else { continue }
+                guard isNotable(token, checker), !out.contains(token) else { continue }
                 out.append(token)
             }
             return out
@@ -184,14 +182,36 @@ enum SpokenVocabulary {
             // spelling is right, and requiring both rejected the exact pair this
             // exists to capture. Suppressing an ordinary word is harmless anyway
             // — the dictionary pass keeps those out of the vocabulary regardless.
-            guard isNotable(right, checker) else { continue }
+            //
+            // Stricter than the diff path deliberately: this is a regex over
+            // arbitrary prose, so `=` also matches code. Allowing capitalised
+            // dictionary words here let Python's "filename = None" through.
+            // A diff earns the looser rule because Yogi retyped it himself.
+            guard isDistinctive(right, checker) else { continue }
             pairs.append((wrong, right))
         }
         return pairs
     }
 
+    /// Is this term worth carrying in the recogniser's vocabulary?
+    ///
+    /// The dictionary test alone loses place names that collide with ordinary
+    /// English — "Pen" the town in Maharashtra was corrected by hand and then
+    /// silently dropped, because `pen` is a word. Capitalisation recovers it:
+    /// a word deliberately capitalised while correcting a transcript is a proper
+    /// noun. Openers are still excluded so a "than → Then" grammar fix doesn't
+    /// register as vocabulary.
     @MainActor
     private static func isNotable(_ word: String, _ checker: NSSpellChecker) -> Bool {
+        if isDistinctive(word, checker) { return true }
+        guard let first = word.first, first.isUppercase else { return false }
+        return !openers.contains(word.lowercased())
+    }
+
+    /// The strict test: unmistakably not an ordinary English word. Used where
+    /// the evidence is weaker than a hand-made correction.
+    @MainActor
+    private static func isDistinctive(_ word: String, _ checker: NSSpellChecker) -> Bool {
         word == word.uppercased() || !isDictionaryWord(word, checker)
     }
 
