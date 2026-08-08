@@ -105,6 +105,13 @@ if [ -n "$OLD_DYLIB" ]; then
 fi
 
 # ── 5. Info.plist ────────────────────────────────────────────────────────────
+# NOTE ON USAGE STRINGS: macOS kills the app outright — not a denied prompt, a
+# hard crash — the first time it touches a TCC-protected resource whose
+# NS*UsageDescription key is missing. Location has been needed since the ambient
+# context work; microphone and speech recognition are here for voice input.
+# No entitlements are required for these: the audio-input entitlement is an App
+# Sandbox concern, and this app is ad-hoc signed without sandbox or hardened
+# runtime (see step 8). If that ever changes, these keys stop being sufficient.
 echo "  [5/8] Writing Info.plist..."
 cat > "$APP/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -126,6 +133,8 @@ cat > "$APP/Contents/Info.plist" << PLIST
 	<key>NSHumanReadableCopyright</key><string>Copyright © 2026 Yogi. All rights reserved.</string>
 	<key>LSUIElement</key><false/>
 	<key>NSLocationWhenInUseUsageDescription</key><string>Looking Glass shares your approximate location and local weather with Alice, so she knows where and when "here" is instead of guessing. It's used only to ground her replies — nothing is uploaded.</string>
+	<key>NSMicrophoneUsageDescription</key><string>Looking Glass listens only while you're holding a conversation with Alice out loud, so you can talk to her instead of typing. Recording starts when you ask it to and stops when you're done — the audio stays on this Mac and is never uploaded.</string>
+	<key>NSSpeechRecognitionUsageDescription</key><string>Looking Glass turns what you say into text using the speech recognition built into macOS, which runs entirely on this Mac. Nothing you say is sent to Apple, to Looking Glass, or anywhere else.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key><true/>
