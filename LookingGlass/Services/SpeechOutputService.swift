@@ -1,184 +1,134 @@
-import AVFoundation
-import AppKit
 import Foundation
 
-/// Alice's spoken voice — on-device text-to-speech.
+/// Alice's spoken voice — the surface the app talks to.
 ///
 /// Tier-1 utility on the `AppleIntelligenceService` pattern: availability-guarded,
 /// silent fallback, callers never have to know whether speech is possible. Nothing
-/// here touches the sidecar — speech is purely a client-side surface, so no agent,
+/// here touches the sidecar — the system engine is purely client-side, so no agent,
 /// tool or SSE contract changes.
 ///
-/// Sprint 3A is manual read-aloud only. The streaming/auto-speak path (voice mode)
-/// lands next and will reuse `speak` with sentence-sized chunks.
+/// This type owns everything that is true regardless of engine: reducing markdown
+/// to a speakable layer, publishing what's being spoken, and reading settings. The
+/// engine itself lives behind `SpeechBackend`, so a second one can land without
+/// touching a single call site here or in the views.
 @MainActor
-final class SpeechOutputService: NSObject, ObservableObject {
+final class SpeechOutputService: ObservableObject {
     static let shared = SpeechOutputService()
 
-    /// What's being spoken right now — a message id, or `previewID` for the
-    /// Settings sample. nil means silent. Drives the play/stop button state.
-    @Published private(set) var speakingID: String?
+    /// What the speech layer is doing right now. Drives the play/stop button.
+    @Published private(set) var activity: SpeechActivity = .idle
 
     /// Synthetic id for the Settings voice preview.
     static let previewID = "voice-preview"
 
-    private let synthesizer = AVSpeechSynthesizer()
-    /// The utterance we believe is live. Guards against a late `didCancel` for a
-    /// replaced utterance clearing the state of the one that replaced it.
-    private var current: AVSpeechUtterance?
+    /// The active engine. Only one exists today; when a second lands this becomes
+    /// a resolution off `Keys.backend` rather than a constant.
+    private let backend: SpeechBackend = SystemSpeechBackend()
 
-    private override init() {
-        super.init()
-        synthesizer.delegate = self
-    }
+    /// Invalidates in-flight backend callbacks. Bumped on every state change, so
+    /// a late completion for a superseded utterance can't clobber the current one
+    /// — `id` alone can't do this, because re-reading the same message reuses it.
+    private var generation = 0
+
+    private init() {}
 
     // MARK: - Settings
+
+    enum Keys {
+        static let enabled = "voiceOutputEnabled"
+        static let voice   = "ttsVoiceIdentifier"
+        static let rate    = "ttsRate"
+        // Reserved for backend selection once there is more than one engine.
+        static let backend = "ttsBackend"
+    }
 
     /// User toggle. Default true — speech is opt-out, like Apple Intelligence.
     var isEnabled: Bool {
         UserDefaults.standard.object(forKey: Keys.enabled).map { ($0 as? Bool) ?? true } ?? true
     }
 
-    private var rate: Float {
+    /// The stored rate that means "normal pace". Settings persists an absolute
+    /// value in this space for historical reasons (it was AVFoundation's scale);
+    /// the backend protocol takes a multiple of natural pace, so this is the
+    /// divisor that converts between them. Keeping the stored space unchanged
+    /// means no migration for anyone who already tuned the slider.
+    static let naturalRate: Double = 0.5
+
+    /// Stored rate expressed as a multiple of natural pace — 1.0 is normal.
+    private var rateMultiple: Double {
         let stored = UserDefaults.standard.double(forKey: Keys.rate)
-        guard stored > 0 else { return AVSpeechUtteranceDefaultSpeechRate }
-        return Float(stored)
+        guard stored > 0 else { return 1.0 }
+        return stored / Self.naturalRate
     }
 
-    enum Keys {
-        static let enabled = "voiceOutputEnabled"
-        static let voice   = "ttsVoiceIdentifier"
-        static let rate    = "ttsRate"
+    private var storedVoiceID: String? {
+        let id = UserDefaults.standard.string(forKey: Keys.voice) ?? ""
+        return id.isEmpty ? nil : id
     }
+
+    // MARK: - State queries
+
+    /// True while this id is being read — including the silent moment before
+    /// audio starts, so a Stop control stays correct on a backend with real
+    /// time-to-first-byte.
+    func isSpeaking(_ id: String) -> Bool { activity.id == id }
+
+    /// True only during the pre-audio phase. Always false on the system engine,
+    /// which starts effectively instantly; voice mode will use this to show that
+    /// a neural backend is working rather than dead.
+    func isPreparing(_ id: String) -> Bool { activity == .preparing(id) }
 
     // MARK: - Speaking
 
-    func isSpeaking(_ id: String) -> Bool { speakingID == id }
-
     /// Play/stop the same message; start fresh if something else is speaking.
     func toggle(_ markdown: String, id: String) {
-        if speakingID == id { stop() } else { speak(markdown, id: id) }
+        if isSpeaking(id) { stop() } else { speak(markdown, id: id) }
     }
 
     /// Speak `markdown` aloud, cancelling anything already in flight.
     /// No-ops when the message reduces to nothing speakable (e.g. pure code).
     func speak(_ markdown: String, id: String) {
         let text = SpeechText.make(from: markdown)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty, backend.readiness.canSpeak else { return }
 
-        if synthesizer.isSpeaking || synthesizer.isPaused {
-            synthesizer.stopSpeaking(at: .immediate)
-        }
+        generation += 1
+        let token = generation
+        activity = .preparing(id)
 
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = Self.resolvedVoice()
-        utterance.rate = rate
-        current = utterance
-        speakingID = id
-        synthesizer.speak(utterance)
+        backend.speak(
+            text,
+            voiceID: storedVoiceID,
+            rate: rateMultiple,
+            onStart: { [weak self] in
+                guard let self, self.generation == token else { return }
+                self.activity = .speaking(id)
+            },
+            onFinish: { [weak self] in
+                guard let self, self.generation == token else { return }
+                self.activity = .idle
+            }
+        )
     }
 
     func stop() {
-        current = nil
-        speakingID = nil
-        guard synthesizer.isSpeaking || synthesizer.isPaused else { return }
-        synthesizer.stopSpeaking(at: .immediate)
+        generation += 1     // orphan any in-flight callbacks
+        activity = .idle
+        backend.stop()
     }
 
-    /// Clear published state only if the finished utterance is still the live one.
-    private func finished(_ utterance: AVSpeechUtterance) {
-        guard utterance === current else { return }
-        current = nil
-        speakingID = nil
+    /// Warm the engine so the first utterance doesn't stall. Free and idempotent;
+    /// a no-op on the system engine, real work on one with a model to load.
+    func warmUp() async {
+        await backend.prepare()
     }
 
-    // MARK: - Voices
+    // MARK: - Voices (delegated to the active backend)
 
-    /// Legacy MacinTalk novelty voices — Zarvox, Bubbles, Bad News, Boing and
-    /// friends. Real synthesisers live under `com.apple.voice.*`; these are the
-    /// 1990s joke set and would be noise in a picker.
-    private static let noveltyPrefix = "com.apple.speech.synthesis.voice."
+    var readiness: SpeechReadiness { backend.readiness }
 
-    /// Voices worth offering, best quality first. English only — Alice's prompt is
-    /// English, and the full list is 180 entries across 44 locales.
-    static func selectableVoices() -> [AVSpeechSynthesisVoice] {
-        AVSpeechSynthesisVoice.speechVoices()
-            .filter { $0.language.hasPrefix("en") }
-            .filter { !$0.identifier.hasPrefix(noveltyPrefix) }
-            .sorted {
-                if $0.quality.rawValue != $1.quality.rawValue {
-                    return $0.quality.rawValue > $1.quality.rawValue
-                }
-                if $0.language != $1.language { return $0.language < $1.language }
-                return $0.name < $1.name
-            }
-    }
+    func voices() -> [VoiceOption] { backend.voices() }
 
-    /// True when nothing better than compact quality is installed — the cue to
-    /// point the user at Spoken Content, where enhanced/premium voices download free.
-    static var onlyDefaultQualityInstalled: Bool {
-        let voices = selectableVoices()
-        return !voices.isEmpty && voices.allSatisfy { $0.quality == .default }
-    }
+    func defaultVoice() -> VoiceOption? { backend.defaultVoice() }
 
-    /// The user's pick, or the best automatic choice. nil hands the decision to
-    /// AVFoundation (system default voice).
-    static func resolvedVoice() -> AVSpeechSynthesisVoice? {
-        let stored = UserDefaults.standard.string(forKey: Keys.voice) ?? ""
-        // A stored voice can vanish if the user removes it in System Settings.
-        if !stored.isEmpty, let voice = AVSpeechSynthesisVoice(identifier: stored) {
-            return voice
-        }
-        return bestAvailableVoice()
-    }
-
-    /// Highest quality installed, tie-broken toward the user's own region and then
-    /// toward Samantha — the most neutral voice present on a stock install.
-    static func bestAvailableVoice() -> AVSpeechSynthesisVoice? {
-        let region = Locale.current.region?.identifier
-        return selectableVoices().max { a, b in rank(a, region) < rank(b, region) }
-    }
-
-    private static func rank(_ v: AVSpeechSynthesisVoice, _ region: String?) -> (Int, Int, Int) {
-        let regionMatch = (region.map { v.language.hasSuffix("-\($0)") } ?? false) ? 1 : 0
-        let neutral = v.name == "Samantha" ? 1 : 0
-        return (v.quality.rawValue, regionMatch, neutral)
-    }
-
-    static func qualityLabel(_ quality: AVSpeechSynthesisVoiceQuality) -> String {
-        switch quality {
-        case .premium:  return "Premium"
-        case .enhanced: return "Enhanced"
-        case .default:  return "Compact"
-        @unknown default: return "Standard"
-        }
-    }
-
-    /// Open System Settings where enhanced/premium voices are downloaded.
-    static func openVoiceDownloads() {
-        let panes = [
-            "x-apple.systempreferences:com.apple.Accessibility-Settings.extension?SpokenContent",
-            "x-apple.systempreferences:com.apple.preference.universalaccess?SpokenContent",
-        ]
-        for pane in panes {
-            if let url = URL(string: pane), NSWorkspace.shared.open(url) { return }
-        }
-    }
-}
-
-// MARK: - AVSpeechSynthesizerDelegate
-
-extension SpeechOutputService: AVSpeechSynthesizerDelegate {
-    // AVFoundation calls these off the main actor; hop before touching state.
-    nonisolated func speechSynthesizer(
-        _ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance
-    ) {
-        Task { @MainActor in self.finished(utterance) }
-    }
-
-    nonisolated func speechSynthesizer(
-        _ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance
-    ) {
-        Task { @MainActor in self.finished(utterance) }
-    }
+    var upgradeHint: SpeechUpgradeHint? { backend.upgradeHint }
 }
