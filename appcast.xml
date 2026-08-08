@@ -6,6 +6,30 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.9.0</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.9.0 — talk to Alice, and hear her back</h3>
+        <ul>
+          <li>Talk instead of typing. Click the mic to enter voice mode, then hold the space bar and speak — let go and it sends. Double-tap the space bar to keep the mic on for a longer thought, and tap the mic again to leave.</li>
+          <li>The mic only listens when you ask it to. Voice mode arms it rather than leaving it open, so a phone call in the same room never ends up in your message.</li>
+          <li>Alice reads her replies aloud in voice mode. She speaks the conversational part and leaves tables, lists and code on screen — you hear an answer rather than a document being recited.</li>
+          <li>The message box becomes a live voice display while you speak, and warms in colour so it is always obvious when the mic is open.</li>
+          <li>She learns the words you use. A place name or term she mishears once, and you correct, is remembered — so she gets it right next time.</li>
+          <li>When she is unsure of a word she hands it back for a quick edit instead of sending it, so a misheard name never goes out silently.</li>
+          <li>Read aloud works on any message, not just in voice mode — hover a reply and press the speaker. Choose a voice and speed in Settings → System → Voice.</li>
+        </ul>
+        <p>Requires macOS 26. Speech recognition runs entirely on your Mac; nothing you say is uploaded.</p>
+      ]]></description>
+      <pubDate>Sun, 09 Aug 2026 01:20:40 +0530</pubDate>
+      <sparkle:version>24</sparkle:version>
+      <sparkle:shortVersionString>0.9.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.9.0/LookingGlass.dmg"
+        sparkle:edSignature="JERlab65n1mi4ABLkeGlYKJlCW8AGytcbO4gKcsOeyvOwXgJo3FRgrMPdtEsbRjvI29MtKBXqB0heQPtGemgCQ==" length="50998498"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.8.12</title>
       <description><![CDATA[
         <h3>Looking Glass 0.8.12 — a calmer chat while Alice works</h3>
