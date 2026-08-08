@@ -305,6 +305,9 @@ struct ChatView: View {
     /// Dim level for input-bar controls while a turn runs — everything except STOP
     /// is disabled, and this makes the lock visible at a glance.
     private let lockedOpacity = 0.45
+    /// Voice input. Observed at this level (not only in the leaf button) because
+    /// the composer shows a live transcript strip while the mic is open.
+    @ObservedObject private var speechInput = SpeechInputService.shared
     /// The editor had focus when the lock engaged → restore it when the turn ends
     /// (never steals focus from another field, e.g. Settings → System Prompt).
     @State private var refocusAfterStream = false
@@ -356,6 +359,9 @@ struct ChatView: View {
         .task {
             viewModel.toolCallStore = toolCallStore
             chatModelOverride = store.activeConversationID.flatMap { store.conversationModel($0) }
+            // Bias dictation toward the proper nouns Yogi actually types. Cached
+            // behind a TTL, so calling this per appearance is cheap.
+            await speechInput.refreshVocabulary(from: store)
         }
     }
 
@@ -624,6 +630,12 @@ struct ChatView: View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             VStack(spacing: 0) {
+                // Stays up on error too — a denied mic or a failed asset install
+                // needs to be readable, and it clears on the next mic press.
+                if speechInput.state != .idle || speechInput.errorMessage != nil {
+                    ListeningStrip()
+                        .transition(.opacity)
+                }
                 if isRecognizingText {
                     ocrReadingStrip
                         .transition(.opacity)
@@ -819,6 +831,15 @@ struct ChatView: View {
             .help(viewModel.researchMode
                   ? "Deep Research active — Alice will search, read sources, and synthesize a report"
                   : "Enable Deep Research mode")
+            .padding(.trailing, 4)
+
+            // Dictation auto-sends. Appends rather than replaces, so speaking
+            // never discards something already typed in the composer.
+            MicButton(isDisabled: viewModel.isStreaming) { spoken in
+                let typed = viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+                viewModel.inputText = typed.isEmpty ? spoken : typed + " " + spoken
+                submit()
+            }
             .padding(.trailing, 4)
 
             Button {
