@@ -41,7 +41,9 @@ class ChatViewModel: ObservableObject {
         researchStatus = researchReportPath != nil ? "Report ready" : nil
     }
 
-    func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?, userName: String?, mcpHintsEnabled: [String: Bool]? = nil, researchMode: Bool = false, store: ConversationStore, attachmentPath: String? = nil) {
+    func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?, userName: String?, mcpHintsEnabled: [String: Bool]? = nil, researchMode: Bool = false, store: ConversationStore, attachmentPath: String? = nil,
+              source: Message.Source = .typed, dictationOriginal: String? = nil,
+              voiceMode: Bool = false) {
         let typed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         let text: String
         if let path = attachmentPath {
@@ -52,7 +54,8 @@ class ChatViewModel: ObservableObject {
         guard !text.isEmpty, !isStreaming else { return }
 
         inputText = ""
-        let userMessage = Message(role: .user, content: text)
+        let userMessage = Message(role: .user, content: text,
+                                  source: source, dictationOriginal: dictationOriginal)
         messages.append(userMessage)
 
         // Ensure a persisted conversation exists, then save the user's turn.
@@ -75,6 +78,7 @@ class ChatViewModel: ObservableObject {
         runTurn(history: Array(messages), model: model, ollamaHost: ollamaHost,
                 enabledTools: enabledTools, systemPrompt: systemPrompt, userName: userName,
                 mcpHintsEnabled: mcpHintsEnabled, researchMode: researchMode, specialistMode: false,
+                voiceMode: voiceMode,
                 conversationID: conversationID, isFirstTurn: isFirstTurn, titleSeed: text, store: store)
     }
 
@@ -103,6 +107,7 @@ class ChatViewModel: ObservableObject {
     private func runTurn(history: [Message], model: String?, ollamaHost: String,
                          enabledTools: [String]?, systemPrompt: String?, userName: String?,
                          mcpHintsEnabled: [String: Bool]?, researchMode: Bool, specialistMode: Bool,
+                         voiceMode: Bool = false,
                          conversationID: UUID, isFirstTurn: Bool, titleSeed: String,
                          store: ConversationStore) {
         messages.append(Message(role: .assistant, content: "", isStreaming: true))
@@ -155,6 +160,7 @@ class ChatViewModel: ObservableObject {
                     mcpHintsEnabled: mcpHintsEnabled,
                     researchMode: researchMode,
                     specialistMode: specialistMode,
+                    voiceMode: voiceMode,
                     environment: environment
                 ) {
                     guard !Task.isCancelled else { break }
@@ -305,6 +311,35 @@ struct ChatView: View {
     /// Dim level for input-bar controls while a turn runs — everything except STOP
     /// is disabled, and this makes the lock visible at a glance.
     private let lockedOpacity = 0.45
+    /// Voice input. Observed at this level (not only in the leaf button) because
+    /// the composer shows a live transcript strip while the mic is open.
+    @ObservedObject private var speechInput = SpeechInputService.shared
+    /// Observed so the spectrograph can dim while Alice is talking — the mic is
+    /// muted then, and a flat line needs to look deliberate.
+    @ObservedObject private var speechOutput = SpeechOutputService.shared
+
+    /// Voice mode is *armed*, not listening. The mic stays shut until SPACE
+    /// says otherwise — perpetual listening meant a phone call in the same room
+    /// kept feeding the transcript.
+    @State private var voiceModeArmed = false
+    @StateObject private var voiceKeys = VoiceKeyMonitor()
+
+    /// What the composer is currently for. Arming is explicit state; a bare
+    /// mic-hold (quick dictation without entering voice mode) still reads as
+    /// voice for tint and display purposes, but never narrates.
+    private var composerMode: ComposerMode {
+        if voiceModeArmed { return .voice }
+        return speechInput.state != .idle ? .voiceHeld : .text
+    }
+    /// The raw transcript of a dictation held back for review, kept so that
+    /// whatever Yogi changes before sending can be read as a correction.
+    @State private var dictationUnderReview: String?
+    /// Words the recogniser flagged, named in the review strip so a mis-tuned
+    /// confidence floor is visible rather than silent.
+    @State private var uncertainWords: [String] = []
+    /// Set when a turn is sent from latched voice mode, so the reply gets read
+    /// back. Consumed on stream end — a held-mic aside never narrates.
+    @State private var narrateNextReply = false
     /// The editor had focus when the lock engaged → restore it when the turn ends
     /// (never steals focus from another field, e.g. Settings → System Prompt).
     @State private var refocusAfterStream = false
@@ -345,6 +380,26 @@ struct ChatView: View {
         .onChange(of: catalog.models) { _, _ in reconcileModelOverride() }
         // Input lock lifecycle: remember whether the editor had focus when the turn
         // started, and hand focus back when it ends so typing can resume immediately.
+        // Read the reply back when the turn came from latched voice mode.
+        // Waits for the stream to finish rather than speaking as tokens arrive:
+        // sentence-buffered narration is its own problem, and a half-formed
+        // sentence read aloud is worse than a beat of silence.
+        .onChange(of: viewModel.isStreaming) { _, streaming in
+            guard !streaming, narrateNextReply else { return }
+            narrateNextReply = false
+            // Voice mode doesn't override the Read-aloud setting: if speech
+            // output is switched off, entering voice mode shouldn't start
+            // producing audio the user turned off elsewhere.
+            guard speechOutput.isEnabled else { return }
+            guard let reply = viewModel.messages.last,
+                  reply.role == .assistant, !reply.content.isEmpty else { return }
+            speechOutput.speak(reply.content, id: reply.id.uuidString)
+        }
+        // Half-duplex, in one place: the mic is deaf for exactly as long as
+        // Alice has the floor — thinking as well as talking.
+        .onChange(of: aliceHasTheFloor) { _, busy in
+            speechInput.setMuted(busy)
+        }
         .onChange(of: viewModel.isStreaming) { _, streaming in
             if streaming {
                 refocusAfterStream = inputFocused
@@ -353,9 +408,37 @@ struct ChatView: View {
                 inputController.focus()
             }
         }
+        // SPACE drives capture while voice mode is armed. Gated so it never
+        // swallows a space that belongs to typing — including the review field
+        // a flagged transcript drops into.
+        .onAppear {
+            voiceKeys.isActive = { voiceModeArmed && uncertainWords.isEmpty && !viewModel.isStreaming }
+            voiceKeys.onHoldBegan = { Task { await speechInput.start() } }
+            voiceKeys.onHoldEnded = {
+                Task {
+                    let utterance = await speechInput.stop()
+                    deliver(utterance, narrate: true)
+                }
+            }
+            voiceKeys.onDoubleTap = {
+                if speechInput.isListening {
+                    Task {
+                        let utterance = await speechInput.stop()
+                        deliver(utterance, narrate: true)
+                    }
+                } else {
+                    Task { await speechInput.start() }
+                }
+            }
+            voiceKeys.install()
+        }
+        .onDisappear { voiceKeys.remove() }
         .task {
             viewModel.toolCallStore = toolCallStore
             chatModelOverride = store.activeConversationID.flatMap { store.conversationModel($0) }
+            // Bias dictation toward the proper nouns Yogi actually types. Cached
+            // behind a TTL, so calling this per appearance is cheap.
+            await speechInput.refreshVocabulary(from: store)
         }
     }
 
@@ -387,7 +470,22 @@ struct ChatView: View {
         }
     }
 
-    private func submit() {
+    private func submit(source: Message.Source = .typed) {
+        // A transcript held back for review and then sent is `.corrected`, not
+        // `.typed` — machine output a human verified. Keeping the pre-edit text
+        // alongside it is what makes it analysable later: a correction only
+        // means something next to what it corrected.
+        var provenance = source
+        var original: String?
+        if let pending = dictationUnderReview {
+            dictationUnderReview = nil
+            uncertainWords = []
+            provenance = .corrected
+            original = pending
+            let diff = SpokenVocabulary.differences(from: pending, to: viewModel.inputText)
+            speechInput.suppress(diff.suppressed)
+            speechInput.learn(diff.learned)
+        }
         let attachment = pendingAttachment
         pendingAttachment = nil
         pendingImage = nil
@@ -400,7 +498,13 @@ struct ChatView: View {
             mcpHintsEnabled: decodedMcpHintsEnabled(),
             researchMode: viewModel.researchMode,
             store: store,
-            attachmentPath: attachment?.path
+            attachmentPath: attachment?.path,
+            source: provenance,
+            dictationOriginal: original,
+            // Tell Alice this one will be heard, so she writes for the ear and
+            // fences anything screen-only. `narrateNextReply` is already set by
+            // `deliver` before it calls this.
+            voiceMode: narrateNextReply
         )
         // send() may have just created the conversation row — persist a pending override.
         if let override = chatModelOverride, let cid = viewModel.loadedConversationID {
@@ -624,6 +728,19 @@ struct ChatView: View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             VStack(spacing: 0) {
+                // Errors only. The running transcript moved into the formatting
+                // row, so keeping this strip for it would say the same thing
+                // twice and stack a fourth band above the composer. A denied mic
+                // or failed asset install still needs to be readable, and it
+                // clears on the next mic press.
+                if speechInput.errorMessage != nil {
+                    ListeningStrip()
+                        .transition(.opacity)
+                }
+                if !uncertainWords.isEmpty {
+                    reviewStrip
+                        .transition(.opacity)
+                }
                 if isRecognizingText {
                     ocrReadingStrip
                         .transition(.opacity)
@@ -632,13 +749,36 @@ struct ChatView: View {
                     attachmentStrip(img)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                // Text field — top of the bar
-                inputTextField
+                // Text field — top of the bar. In voice mode the spectrograph
+                // takes its place, EXCEPT when a transcript is waiting to be
+                // corrected: when the system needs help it shows words, not a
+                // waveform. Fixing and sending returns the spectrograph.
+                if composerMode.isVoice && uncertainWords.isEmpty {
+                    SpectrographView(
+                        levels: speechInput.levels,
+                        tint: ComposerTint.voice,
+                        state: spectrographState
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .transition(.opacity)
+                } else {
+                    inputTextField
+                }
                 // Bottom row: formatting buttons (when focused) + send/stop button
                 inputBottomBar
             }
             .frame(maxWidth: 960)
             .glassEffect(.regular, in: .rect(cornerRadius: 16, style: .continuous))
+            // Mode wash. Over the glass rather than under it, so the tint is
+            // actually visible instead of being averaged away by the material.
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(ComposerTint.color(for: composerMode))
+                    .opacity(ComposerTint.opacity(for: composerMode, scheme: colorScheme))
+                    .allowsHitTesting(false)
+            )
+            .animation(.easeInOut(duration: 0.28), value: composerMode)
             .onDrop(of: [.image, .fileURL], isTargeted: $isDropTargeted) { providers in
                 loadDroppedImage(providers)
             }
@@ -652,7 +792,10 @@ struct ChatView: View {
             // been replaced by tool cards and only STOP hinted that work continues.
             .overlay {
                 if viewModel.isStreaming {
-                    ProcessingShimmerBorder(cornerRadius: 16)
+                    ProcessingShimmerBorder(
+                        cornerRadius: 16,
+                        tint: composerMode.isVoice ? ComposerTint.voice : .accentColor
+                    )
                         .transition(.opacity)
                 }
             }
@@ -784,7 +927,27 @@ struct ChatView: View {
             .disabled(viewModel.isStreaming)
             .opacity(viewModel.isStreaming ? lockedOpacity : 1)
             .help("Attach an image")
-            if inputFocused {
+            // Formatting buttons are dead weight in voice mode, so the row is
+            // reused for the running transcript rather than adding yet another
+            // strip above the composer. One dim line: enough to catch a
+            // disaster mid-sentence, not enough to become a second text field.
+            if composerMode.isVoice {
+                Group {
+                    if viewModel.isStreaming {
+                        // The mic is muted here, so "Listening…" would be a lie.
+                        // Alice's own thinking words belong in the composer once
+                        // it's the thing that's working.
+                        ThinkingLabel(font: .system(size: 11), tracking: 0)
+                    } else {
+                        Text(voiceTranscriptLine)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                }
+                .padding(.leading, 6)
+            } else if inputFocused {
                 Group {
                     FormatButton(icon: "bold", help: "Bold") { inputController.wrap(prefix: "**", suffix: "**") }
                     FormatButton(icon: "italic", help: "Italic") { inputController.wrap(prefix: "*", suffix: "*") }
@@ -821,20 +984,152 @@ struct ChatView: View {
                   : "Enable Deep Research mode")
             .padding(.trailing, 4)
 
+            // Dictation auto-sends — unless the recogniser flagged a word it
+            // doubted, in which case it lands in the composer instead and waits.
+            // The system asks for help only when it knows it needs it.
+            MicButton(
+                isDisabled: viewModel.isStreaming,
+                isVoiceMode: voiceModeArmed,
+                onToggleVoiceMode: { toggleVoiceMode() }
+            ) { utterance in
+                // A bare mic-hold is a one-off dictation, so it never narrates;
+                // arming voice mode is what asks Alice to speak back.
+                deliver(utterance, narrate: voiceModeArmed)
+            }
+            .padding(.trailing, 4)
+
             Button {
-                if viewModel.isStreaming { viewModel.cancelStream() } else { submit() }
+                if viewModel.isStreaming {
+                    viewModel.cancelStream()
+                } else if speechOutput.isActive {
+                    // While Alice narrates, send *is* stop — she's the only
+                    // thing in flight, and the mic un-mutes the moment she ends.
+                    speechOutput.stop()
+                } else if composerMode.isVoice {
+                    sendFromVoice()
+                } else {
+                    submit()
+                }
             } label: {
-                Image(systemName: viewModel.isStreaming ? "stop.circle.fill" : "arrow.up.circle.fill")
+                Image(systemName: sendButtonIsStop ? "stop.circle.fill" : "arrow.up.circle.fill")
                     .font(.system(size: 32))
-                    .foregroundStyle(viewModel.isStreaming ? Color.red : Color.accentColor)
+                    .foregroundStyle(sendButtonIsStop ? Color.red : Color.accentColor)
             }
             .buttonStyle(.plain)
-            .disabled(!viewModel.isStreaming && viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pendingAttachment == nil)
+            // In voice mode the composer is empty by definition — what would be
+            // sent lives in the transcript, so the text-emptiness test doesn't
+            // apply.
+            .disabled(!sendButtonIsStop && !composerMode.isVoice
+                      && viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      && pendingAttachment == nil)
         }
         .padding(.horizontal, 10)
         .padding(.top, 2)
         .padding(.bottom, 8)
         .animation(.easeInOut(duration: 0.16), value: inputFocused)
+    }
+
+    /// Shown instead of auto-sending when the recogniser doubted a word. Naming
+    /// the words matters twice over: it tells Yogi where to look, and it makes a
+    /// badly tuned confidence floor obvious the moment it fires on the wrong things.
+    private var reviewStrip: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "questionmark.circle")
+                .font(.system(size: 12))
+                .foregroundStyle(.orange)
+            Text("Not sure about \(uncertainWords.joined(separator: ", ")) — edit if needed, then send.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+            Button {
+                dictationUnderReview = nil
+                uncertainWords = []
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var sendButtonIsStop: Bool { viewModel.isStreaming || speechOutput.isActive }
+
+    /// Alice has the floor: thinking or talking. The mic is deaf for all of it.
+    ///
+    /// Muting only while she *spoke* was too narrow — between send and her first
+    /// token the mic stayed live, so the display kept reacting to room noise
+    /// while nothing was being listened to. Reacting to sound nobody is
+    /// listening to is worse than showing nothing.
+    private var aliceHasTheFloor: Bool { viewModel.isStreaming || speechOutput.isActive }
+
+    private var spectrographState: SpectrographState {
+        if viewModel.isStreaming { return .processing }
+        if speechOutput.isActive { return .speaking }
+        return speechInput.isListening ? .live : .armed
+    }
+
+    private func toggleVoiceMode() {
+        voiceModeArmed.toggle()
+        // Leaving the mode must close the mic, whatever opened it.
+        if !voiceModeArmed, speechInput.state != .idle {
+            Task { await speechInput.cancel() }
+        }
+    }
+
+    /// Send without leaving voice mode: snapshot what's been heard, keep the
+    /// session alive, and let the next utterance start straight away.
+    private func sendFromVoice() {
+        Task {
+            let utterance = await speechInput.commit()
+            deliver(utterance, narrate: composerMode.narratesReplies)
+        }
+    }
+
+    /// The single path a finished utterance takes, whether it came from the mic
+    /// switching off or from send-in-voice-mode.
+    private func deliver(_ utterance: SpeechInputService.Utterance, narrate: Bool) {
+        let text = utterance.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let typed = viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        viewModel.inputText = typed.isEmpty ? text : typed + " " + text
+
+        if utterance.needsReview {
+            // Hand it over for correction instead of sending. The spectrograph
+            // yields to the text field for as long as this is pending.
+            dictationUnderReview = text
+            uncertainWords = utterance.uncertain
+            inputController.focus()
+            return
+        }
+        narrateNextReply = narrate
+        submit(source: .dictated)
+    }
+
+    /// Truncated from the head, so the tail — the words just spoken — stays put
+    /// instead of the line scrolling away from under the eye.
+    private var voiceTranscriptLine: String {
+        if speechOutput.isActive { return "Alice is speaking…" }
+        // Named explicitly, and said to be one-off: a multi-minute wait the
+        // first time you ever press the mic needs to explain itself, or it
+        // reads as the feature being broken.
+        if let fraction = speechInput.downloadProgress {
+            return "Downloading the speech model — \(Int(fraction * 100))%. One time only."
+        }
+        if speechInput.state == .preparing { return "Getting ready…" }
+        let text = speechInput.transcript
+        if !text.isEmpty { return text }
+        // Armed but closed. The shortcut is invisible otherwise, and a mic that
+        // deliberately isn't listening needs to say so or it reads as broken.
+        if !speechInput.isListening {
+            return "Hold SPACE to talk · double-tap SPACE to stay on"
+        }
+        return "Listening…"
     }
 
     /// Brief inline indicator while a pasted image is being OCR'd (usually well under a second).

@@ -145,6 +145,7 @@ class ChatRequest(BaseModel):
     mcp_hints_enabled: dict[str, bool] | None = None  # per-server MCP prompt injection toggle
     research_mode: bool = False               # forces deep-research skill + research model
     specialist_mode: bool = False             # per-turn "consult the big model" — routes to [models].specialist, overrides pick
+    voice_mode: bool = False                  # reply will be spoken aloud — write for the ear, mark screen-only detail with --- rules
     models: dict[str, str] | None = None      # per-request role→model map (user preset), layers over config.toml [models]; None = shipped default
     environment: dict[str, str] | None = None # ambient context from the app (location, weather, …) → merged into Alice's "## Your environment" block
 
@@ -385,6 +386,7 @@ async def chat(request: ChatRequest):
                 mcp_hints_enabled=request.mcp_hints_enabled,
                 research_mode=request.research_mode,
                 specialist_mode=request.specialist_mode,
+                voice_mode=request.voice_mode,
                 models_override=request.models,
                 environment=request.environment,
             ):

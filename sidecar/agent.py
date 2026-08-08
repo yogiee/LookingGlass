@@ -471,6 +471,7 @@ async def chat_stream(
     mcp_hints_enabled: dict[str, bool] | None = None,
     research_mode: bool = False,
     specialist_mode: bool = False,
+    voice_mode: bool = False,
     models_override: dict | None = None,
     environment: dict | None = None,
 ) -> AsyncIterator[dict]:
@@ -613,6 +614,30 @@ async def chat_stream(
             "corrections or deeper dives. Do NOT reproduce the full report in chat — they can "
             "read it in the panel.\n\n"
             + (f"### Research Playbook\n{skill_body}" if skill_body else "")
+        )
+
+    if voice_mode:
+        # The reply is going to be *heard*, not read. The client already splits
+        # spoken prose from on-screen structure, but it can only split what it's
+        # given: prose written after a bulleted list usually refers back to it,
+        # so removing the list leaves the spoken half jumping between fragments
+        # that no longer connect. Marking the boundary explicitly lets the spoken
+        # half stay continuous.
+        parts.append(
+            "## Active mode: Voice\n"
+            "Yogi is talking to you out loud and your reply will be read back to him, "
+            "so write it to be HEARD. Speak in continuous prose — full sentences that "
+            "flow one into the next, the way you'd actually say them. Contractions are "
+            "good. Avoid markdown in the spoken part entirely: no bullets, no bold, no "
+            "headings.\n\n"
+            "If there is genuine detail worth keeping — a comparison, a list of options, "
+            "figures, code — put a `---` rule, then that detail, then another `---` rule, "
+            "and carry on speaking after it. Everything between the rules is shown on "
+            "screen and never read aloud, so the sentences either side must still make "
+            "sense read straight through, with the detail skipped. Don't say 'as you can "
+            "see below' or refer to it as if he's reading.\n\n"
+            "Most replies need no rules at all — just talk. Keep it to what you'd "
+            "comfortably say in one breath-group of conversation rather than an essay."
         )
 
     guidelines = read_guidelines(project_dir)

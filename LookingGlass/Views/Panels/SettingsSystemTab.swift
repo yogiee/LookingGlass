@@ -1,4 +1,3 @@
-import AVFoundation
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -26,8 +25,8 @@ struct SettingsSystemTab: View {
 
     @State private var tools: [ToolInfo] = []
     @State private var loadingTools = true
-    /// Enumerated once — `speechVoices()` returns ~180 entries across 44 locales.
-    @State private var voices: [AVSpeechSynthesisVoice] = []
+    /// Enumerated once — the system engine vends ~180 entries across 44 locales.
+    @State private var voices: [VoiceOption] = []
     @State private var promptExpanded = false
     @State private var showingPromptImporter = false
 
@@ -67,14 +66,17 @@ struct SettingsSystemTab: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .task { await loadTools() }
-        .onAppear { voices = SpeechOutputService.selectableVoices() }
+        // Free on the system engine; on a backend with a model to load this is
+        // what keeps the Preview button from stalling on first press.
+        .task { await speech.warmUp() }
+        .onAppear { voices = speech.voices() }
         // Downloading a voice happens in System Settings, so the new one only exists
         // once we come back — re-enumerate on reactivation rather than showing a
         // stale list right after the user acted on the hint below.
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didBecomeActiveNotification
         )) { _ in
-            voices = SpeechOutputService.selectableVoices()
+            voices = speech.voices()
         }
     }
 
@@ -93,8 +95,8 @@ struct SettingsSystemTab: View {
                 voicePicker
                 rateSlider
                 previewRow
-                if SpeechOutputService.onlyDefaultQualityInstalled {
-                    betterVoicesHint
+                if let hint = speech.upgradeHint {
+                    upgradeHintRow(hint)
                 }
             }
         }
@@ -105,12 +107,11 @@ struct SettingsSystemTab: View {
             Picker("Voice", selection: $ttsVoiceIdentifier) {
                 Text("Automatic").tag("")
                 Divider()
-                ForEach(voices, id: \.identifier) { voice in
-                    Text("\(voice.name) · \(SpeechOutputService.qualityLabel(voice.quality)) · \(voice.language)")
-                        .tag(voice.identifier)
+                ForEach(voices) { voice in
+                    Text(voice.label).tag(voice.id)
                 }
             }
-            if ttsVoiceIdentifier.isEmpty, let auto = SpeechOutputService.bestAvailableVoice() {
+            if ttsVoiceIdentifier.isEmpty, let auto = speech.defaultVoice() {
                 Text("Automatic picks the best installed voice — currently \(auto.name) (\(auto.language)).")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -123,7 +124,7 @@ struct SettingsSystemTab: View {
             HStack {
                 Text("Speaking Rate")
                 Spacer()
-                Text(String(format: "%.2f×", ttsRate / Double(AVSpeechUtteranceDefaultSpeechRate)))
+                Text(String(format: "%.2f×", ttsRate / SpeechOutputService.naturalRate))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
@@ -155,16 +156,21 @@ struct SettingsSystemTab: View {
         "This is how I'll sound when I read something back to you. "
         + "Long answers, short ones, whatever you send my way."
 
-    private var betterVoicesHint: some View {
+    /// Whatever the active engine offers as its "this could sound better"
+    /// nudge — free voice downloads on the system engine, a model download on a
+    /// neural one. The view doesn't know or care which.
+    private func upgradeHintRow(_ hint: SpeechUpgradeHint) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Only compact voices are installed. Enhanced and Premium voices are a free download and sound dramatically more natural.")
+            Text(hint.message)
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
-            Button("Get Better Voices…") { SpeechOutputService.openVoiceDownloads() }
+            Button(hint.buttonTitle) { hint.action() }
                 .font(.system(size: 11))
-            Text("System Settings → Accessibility → Spoken Content → System Voice → Manage Voices")
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
+            if let detail = hint.detail {
+                Text(detail)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+            }
         }
     }
 
