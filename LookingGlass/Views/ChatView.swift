@@ -310,6 +310,17 @@ struct ChatView: View {
     /// Voice input. Observed at this level (not only in the leaf button) because
     /// the composer shows a live transcript strip while the mic is open.
     @ObservedObject private var speechInput = SpeechInputService.shared
+    /// Observed so the spectrograph can dim while Alice is talking — the mic is
+    /// muted then, and a flat line needs to look deliberate.
+    @ObservedObject private var speechOutput = SpeechOutputService.shared
+
+    /// What the composer is currently for. Derived rather than stored — the mic
+    /// is the single source of truth for whether voice is engaged, so there is
+    /// no second copy of that state to fall out of sync.
+    private var composerMode: ComposerMode {
+        guard speechInput.state != .idle else { return .text }
+        return speechInput.isLatched ? .voice : .voiceHeld
+    }
     /// The raw transcript of a dictation held back for review, kept so that
     /// whatever Yogi changes before sending can be read as a correction.
     @State private var dictationUnderReview: String?
@@ -655,9 +666,12 @@ struct ChatView: View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             VStack(spacing: 0) {
-                // Stays up on error too — a denied mic or a failed asset install
-                // needs to be readable, and it clears on the next mic press.
-                if speechInput.state != .idle || speechInput.errorMessage != nil {
+                // Errors only. The running transcript moved into the formatting
+                // row, so keeping this strip for it would say the same thing
+                // twice and stack a fourth band above the composer. A denied mic
+                // or failed asset install still needs to be readable, and it
+                // clears on the next mic press.
+                if speechInput.errorMessage != nil {
                     ListeningStrip()
                         .transition(.opacity)
                 }
@@ -673,13 +687,36 @@ struct ChatView: View {
                     attachmentStrip(img)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                // Text field — top of the bar
-                inputTextField
+                // Text field — top of the bar. In voice mode the spectrograph
+                // takes its place, EXCEPT when a transcript is waiting to be
+                // corrected: when the system needs help it shows words, not a
+                // waveform. Fixing and sending returns the spectrograph.
+                if composerMode.isVoice && uncertainWords.isEmpty {
+                    SpectrographView(
+                        levels: speechInput.levels,
+                        tint: ComposerTint.voice,
+                        isMuted: speechOutput.isActive
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .transition(.opacity)
+                } else {
+                    inputTextField
+                }
                 // Bottom row: formatting buttons (when focused) + send/stop button
                 inputBottomBar
             }
             .frame(maxWidth: 960)
             .glassEffect(.regular, in: .rect(cornerRadius: 16, style: .continuous))
+            // Mode wash. Over the glass rather than under it, so the tint is
+            // actually visible instead of being averaged away by the material.
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(ComposerTint.color(for: composerMode))
+                    .opacity(ComposerTint.opacity(for: composerMode, scheme: colorScheme))
+                    .allowsHitTesting(false)
+            )
+            .animation(.easeInOut(duration: 0.28), value: composerMode)
             .onDrop(of: [.image, .fileURL], isTargeted: $isDropTargeted) { providers in
                 loadDroppedImage(providers)
             }
@@ -825,7 +862,18 @@ struct ChatView: View {
             .disabled(viewModel.isStreaming)
             .opacity(viewModel.isStreaming ? lockedOpacity : 1)
             .help("Attach an image")
-            if inputFocused {
+            // Formatting buttons are dead weight in voice mode, so the row is
+            // reused for the running transcript rather than adding yet another
+            // strip above the composer. One dim line: enough to catch a
+            // disaster mid-sentence, not enough to become a second text field.
+            if composerMode.isVoice {
+                Text(voiceTranscriptLine)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+                    .padding(.leading, 6)
+            } else if inputFocused {
                 Group {
                     FormatButton(icon: "bold", help: "Bold") { inputController.wrap(prefix: "**", suffix: "**") }
                     FormatButton(icon: "italic", help: "Italic") { inputController.wrap(prefix: "*", suffix: "*") }
@@ -921,6 +969,15 @@ struct ChatView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Truncated from the head, so the tail — the words just spoken — stays put
+    /// instead of the line scrolling away from under the eye.
+    private var voiceTranscriptLine: String {
+        if speechOutput.isActive { return "Alice is speaking…" }
+        if speechInput.state == .preparing { return "Getting ready…" }
+        let text = speechInput.transcript
+        return text.isEmpty ? "Listening…" : text
     }
 
     /// Brief inline indicator while a pasted image is being OCR'd (usually well under a second).

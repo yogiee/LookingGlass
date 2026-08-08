@@ -73,6 +73,11 @@ final class SpeechOutputService: ObservableObject {
     /// time-to-first-byte.
     func isSpeaking(_ id: String) -> Bool { activity.id == id }
 
+    /// True whenever anything at all is being spoken or prepared, regardless of
+    /// which message. The composer needs this to mute the mic and dim the
+    /// spectrograph while Alice talks.
+    var isActive: Bool { activity != .idle }
+
     /// True only during the pre-audio phase. Always false on the system engine,
     /// which starts effectively instantly; voice mode will use this to show that
     /// a neural backend is working rather than dead.

@@ -64,6 +64,16 @@ final class SpeechInputService: ObservableObject {
     /// Words the recogniser doubted during this utterance, in order of appearance.
     private var uncertainWords: [String] = []
 
+    /// True when this listening session was started by a *click* rather than a
+    /// hold, i.e. the composer is latched into voice mode.
+    ///
+    /// Can only be known on release — a press is ambiguous until it ends — so it
+    /// starts false and gets promoted. Nothing user-visible depends on it during
+    /// the press itself; it decides whether Alice narrates her reply afterwards.
+    @Published private(set) var isLatched = false
+
+    func markLatched() { isLatched = true }
+
     /// Lowest confidence seen in the last utterance, or nil when the recogniser
     /// reported none at all. Surfaced in the mic tooltip purely so the floor can
     /// be tuned against real numbers instead of guessed at.
@@ -123,6 +133,13 @@ final class SpeechInputService: ObservableObject {
     private var engine: AVAudioEngine?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
+
+    /// Band energies for the composer spectrograph, low → high. Empty when idle.
+    @Published private(set) var levels: [Float] = []
+
+    /// Allocated once and reused — FFT setup is not free, and it must not be
+    /// built inside the audio tap.
+    private let meter = AudioLevelMeter()
 
     /// Proper nouns harvested from chat history, fed to the recogniser as
     /// contextual bias. See `SpokenVocabulary`.
@@ -211,6 +228,7 @@ final class SpeechInputService: ObservableObject {
         uncertainWords = []
         lastMinConfidence = nil
         lastWeakestWord = nil
+        isLatched = false
         state = .preparing
         do {
             try await beginListening()
@@ -319,7 +337,16 @@ final class SpeechInputService: ObservableObject {
 
         // Realtime audio thread: convert and hand off, nothing else. No actor
         // hops, no allocation beyond the output buffer, no logging.
-        input.installTap(onBus: 0, bufferSize: 4096, format: tapFormat) { buffer, _ in
+        // 2048 rather than 4096: the tap drives the spectrograph as well as the
+        // recogniser, and 4096 frames is only ~12 updates/second — visibly
+        // steppy. 2048 roughly doubles that for negligible extra cost.
+        let meter = self.meter
+        input.installTap(onBus: 0, bufferSize: 2048, format: tapFormat) { [weak self] buffer, _ in
+            // Realtime thread. The FFT is fixed-cost and allocation-free; only
+            // the publish hops to the main actor.
+            if let bands = meter?.bands(from: buffer) {
+                Task { @MainActor in self?.levels = bands }
+            }
             guard let converted = conversion.convert(buffer) else { return }
             continuation.yield(AnalyzerInput(buffer: converted))
         }
@@ -514,6 +541,8 @@ final class SpeechInputService: ObservableObject {
 
     private func teardown() async {
         closeAudio()
+        meter?.reset()
+        levels = []
         inputContinuation?.finish()
         inputContinuation = nil
         resultsTask = nil

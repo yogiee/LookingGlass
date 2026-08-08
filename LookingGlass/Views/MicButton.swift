@@ -100,7 +100,12 @@ struct MicButton: View {
         let heldLongEnough = Date().timeIntervalSince(start) >= Self.holdThreshold
         // A quick click that *started* listening leaves the mic open; anything
         // else — a click while live, or a released hold — closes it.
-        guard stopWhenReleased || heldLongEnough else { return }
+        guard stopWhenReleased || heldLongEnough else {
+            // Staying open *is* the latch: this press was a click, so the
+            // composer is now in voice mode proper rather than a held aside.
+            speech.markLatched()
+            return
+        }
         finish()
     }
 
