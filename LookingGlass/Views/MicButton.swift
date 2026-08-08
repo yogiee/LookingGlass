@@ -13,19 +13,28 @@ import SwiftUI
 /// should be a no-op, not a blank turn.
 struct MicButton: View {
     var isDisabled: Bool
+    /// Whether the composer is armed for voice. Drives the lit state — in voice
+    /// mode the mic reads as "on" even between utterances, because it is.
+    var isVoiceMode: Bool
+    /// A click arms or disarms voice mode; SPACE then does the capturing.
+    var onToggleVoiceMode: () -> Void
     var onUtterance: (SpeechInputService.Utterance) -> Void
 
     @ObservedObject private var speech = SpeechInputService.shared
 
     /// Deduplicates the drag gesture's repeated `onChanged` calls into one press.
     @State private var pressing = false
-    @State private var pressStart: Date?
     /// True when the mic was already live as this press began, which makes the
     /// press the closing half of a toggle rather than the opening half.
     @State private var stopWhenReleased = false
+    /// Set once the press has lasted long enough to count as a hold and the mic
+    /// has actually been opened.
+    @State private var didStartHold = false
+    @State private var holdTask: Task<Void, Never>?
 
-    /// Under this, a press reads as a click; at or over it, as a hold.
-    private static let holdThreshold: TimeInterval = 0.35
+    /// Under this, a press reads as a click; at or over it, as a hold. Matches
+    /// `VoiceKeyMonitor` so the mic and the SPACE bar feel the same.
+    private static let holdThreshold: Duration = .milliseconds(220)
 
     var body: some View {
         // Hidden entirely when the framework can't transcribe here, rather than
@@ -55,25 +64,34 @@ struct MicButton: View {
     private var control: some View {
         switch speech.state {
         case .preparing, .finishing:
-            // First run can sit here for a while — the language model is a real
-            // download, not just a warm-up.
-            ProgressView()
-                .controlSize(.small)
-                .frame(width: 30, height: 30)
+            // Determinate whenever we know the fraction: on first use this is a
+            // model download that can run for minutes, and a spinner that long
+            // is indistinguishable from a hang.
+            if let fraction = speech.downloadProgress {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.circular)
+                    .controlSize(.small)
+                    .frame(width: 30, height: 30)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 30, height: 30)
+            }
         default:
-            Image(systemName: speech.isListening ? "mic.fill" : "mic")
-                .font(.system(size: 15, weight: speech.isListening ? .semibold : .regular))
-                .foregroundStyle(speech.isListening ? Color.accentColor : Color.secondary.opacity(0.8))
+            let lit = speech.isListening || isVoiceMode
+            Image(systemName: lit ? "mic.fill" : "mic")
+                .font(.system(size: 15, weight: lit ? .semibold : .regular))
+                .foregroundStyle(lit ? Color.accentColor : Color.secondary.opacity(0.8))
                 .frame(width: 30, height: 30)
-                .background(speech.isListening ? Color.accentColor.opacity(0.1) : Color.clear)
+                .background(lit ? Color.accentColor.opacity(0.1) : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
                 .contentShape(Rectangle())
         }
     }
 
     private var helpText: String {
-        if speech.isListening { return "Stop listening and send" }
-        let base = "Click to dictate, or hold to talk"
+        if isVoiceMode { return "Voice mode on — hold SPACE to talk, double-tap SPACE to stay on" }
+        let base = "Click for voice mode, or hold to dictate once"
         // Exposes the raw signal so the confidence floor gets tuned against real
         // numbers. "no confidence data" here means the attribute isn't arriving.
         guard let low = speech.lastMinConfidence else { return base }
@@ -85,28 +103,43 @@ struct MicButton: View {
 
     private func pressDown() {
         guard !isDisabled else { return }
-        pressStart = Date()
+        didStartHold = false
+
+        // Already capturing (latched by SPACE): this press is a stop.
         if speech.isListening {
             stopWhenReleased = true
-        } else {
-            stopWhenReleased = false
-            Task { await speech.start() }
+            return
+        }
+        stopWhenReleased = false
+
+        // ⚠ Deliberately does NOT open the mic yet. Starting on press and
+        // cancelling on a click raced its own async setup — the cancel landed
+        // mid-setup, setup finished afterwards, and the mic came back on. That
+        // made arming voice mode start listening immediately and disarming
+        // impossible. Waiting until the press is known to be a hold removes the
+        // race rather than narrowing it.
+        holdTask?.cancel()
+        holdTask = Task {
+            do { try await Task.sleep(for: Self.holdThreshold) } catch { return }
+            didStartHold = true
+            await speech.start()
         }
     }
 
     private func release() {
-        guard !isDisabled, let start = pressStart else { return }
-        pressStart = nil
-        let heldLongEnough = Date().timeIntervalSince(start) >= Self.holdThreshold
-        // A quick click that *started* listening leaves the mic open; anything
-        // else — a click while live, or a released hold — closes it.
-        guard stopWhenReleased || heldLongEnough else {
-            // Staying open *is* the latch: this press was a click, so the
-            // composer is now in voice mode proper rather than a held aside.
-            speech.markLatched()
-            return
+        guard !isDisabled else { return }
+        holdTask?.cancel()
+
+        if stopWhenReleased || didStartHold {
+            // A released hold is a quick dictation in its own right — the path
+            // for a one-off without arming voice mode at all.
+            finish()
+        } else {
+            // Too short to be a hold, so it means the mode, not the mic.
+            onToggleVoiceMode()
         }
-        finish()
+        didStartHold = false
+        stopWhenReleased = false
     }
 
     private func finish() {

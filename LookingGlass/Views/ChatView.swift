@@ -314,12 +314,18 @@ struct ChatView: View {
     /// muted then, and a flat line needs to look deliberate.
     @ObservedObject private var speechOutput = SpeechOutputService.shared
 
-    /// What the composer is currently for. Derived rather than stored — the mic
-    /// is the single source of truth for whether voice is engaged, so there is
-    /// no second copy of that state to fall out of sync.
+    /// Voice mode is *armed*, not listening. The mic stays shut until SPACE
+    /// says otherwise — perpetual listening meant a phone call in the same room
+    /// kept feeding the transcript.
+    @State private var voiceModeArmed = false
+    @StateObject private var voiceKeys = VoiceKeyMonitor()
+
+    /// What the composer is currently for. Arming is explicit state; a bare
+    /// mic-hold (quick dictation without entering voice mode) still reads as
+    /// voice for tint and display purposes, but never narrates.
     private var composerMode: ComposerMode {
-        guard speechInput.state != .idle else { return .text }
-        return speechInput.isLatched ? .voice : .voiceHeld
+        if voiceModeArmed { return .voice }
+        return speechInput.state != .idle ? .voiceHeld : .text
     }
     /// The raw transcript of a dictation held back for review, kept so that
     /// whatever Yogi changes before sending can be read as a correction.
@@ -398,6 +404,31 @@ struct ChatView: View {
                 inputController.focus()
             }
         }
+        // SPACE drives capture while voice mode is armed. Gated so it never
+        // swallows a space that belongs to typing — including the review field
+        // a flagged transcript drops into.
+        .onAppear {
+            voiceKeys.isActive = { voiceModeArmed && uncertainWords.isEmpty && !viewModel.isStreaming }
+            voiceKeys.onHoldBegan = { Task { await speechInput.start() } }
+            voiceKeys.onHoldEnded = {
+                Task {
+                    let utterance = await speechInput.stop()
+                    deliver(utterance, narrate: true)
+                }
+            }
+            voiceKeys.onDoubleTap = {
+                if speechInput.isListening {
+                    Task {
+                        let utterance = await speechInput.stop()
+                        deliver(utterance, narrate: true)
+                    }
+                } else {
+                    Task { await speechInput.start() }
+                }
+            }
+            voiceKeys.install()
+        }
+        .onDisappear { voiceKeys.remove() }
         .task {
             viewModel.toolCallStore = toolCallStore
             chatModelOverride = store.activeConversationID.flatMap { store.conversationModel($0) }
@@ -948,10 +979,14 @@ struct ChatView: View {
             // Dictation auto-sends — unless the recogniser flagged a word it
             // doubted, in which case it lands in the composer instead and waits.
             // The system asks for help only when it knows it needs it.
-            MicButton(isDisabled: viewModel.isStreaming) { utterance in
-                // Switching the mic off mid-utterance still delivers what it
-                // heard; narration is decided by whether voice was latched.
-                deliver(utterance, narrate: speechInput.isLatched)
+            MicButton(
+                isDisabled: viewModel.isStreaming,
+                isVoiceMode: voiceModeArmed,
+                onToggleVoiceMode: { toggleVoiceMode() }
+            ) { utterance in
+                // A bare mic-hold is a one-off dictation, so it never narrates;
+                // arming voice mode is what asks Alice to speak back.
+                deliver(utterance, narrate: voiceModeArmed)
             }
             .padding(.trailing, 4)
 
@@ -1028,11 +1063,19 @@ struct ChatView: View {
     private var spectrographState: SpectrographState {
         if viewModel.isStreaming { return .processing }
         if speechOutput.isActive { return .speaking }
-        return .live
+        return speechInput.isListening ? .live : .armed
+    }
+
+    private func toggleVoiceMode() {
+        voiceModeArmed.toggle()
+        // Leaving the mode must close the mic, whatever opened it.
+        if !voiceModeArmed, speechInput.state != .idle {
+            Task { await speechInput.cancel() }
+        }
     }
 
     /// Send without leaving voice mode: snapshot what's been heard, keep the
-    /// mic open, and let the next sentence start straight away.
+    /// session alive, and let the next utterance start straight away.
     private func sendFromVoice() {
         Task {
             let utterance = await speechInput.commit()
@@ -1064,9 +1107,21 @@ struct ChatView: View {
     /// instead of the line scrolling away from under the eye.
     private var voiceTranscriptLine: String {
         if speechOutput.isActive { return "Alice is speaking…" }
+        // Named explicitly, and said to be one-off: a multi-minute wait the
+        // first time you ever press the mic needs to explain itself, or it
+        // reads as the feature being broken.
+        if let fraction = speechInput.downloadProgress {
+            return "Downloading the speech model — \(Int(fraction * 100))%. One time only."
+        }
         if speechInput.state == .preparing { return "Getting ready…" }
         let text = speechInput.transcript
-        return text.isEmpty ? "Listening…" : text
+        if !text.isEmpty { return text }
+        // Armed but closed. The shortcut is invisible otherwise, and a mic that
+        // deliberately isn't listening needs to say so or it reads as broken.
+        if !speechInput.isListening {
+            return "Hold SPACE to talk · double-tap SPACE to stay on"
+        }
+        return "Listening…"
     }
 
     /// Brief inline indicator while a pasted image is being OCR'd (usually well under a second).

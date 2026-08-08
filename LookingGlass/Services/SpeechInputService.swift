@@ -64,15 +64,6 @@ final class SpeechInputService: ObservableObject {
     /// Words the recogniser doubted during this utterance, in order of appearance.
     private var uncertainWords: [String] = []
 
-    /// True when this listening session was started by a *click* rather than a
-    /// hold, i.e. the composer is latched into voice mode.
-    ///
-    /// Can only be known on release — a press is ambiguous until it ends — so it
-    /// starts false and gets promoted. Nothing user-visible depends on it during
-    /// the press itself; it decides whether Alice narrates her reply afterwards.
-    @Published private(set) var isLatched = false
-
-    func markLatched() { isLatched = true }
 
     /// Lowest confidence seen in the last utterance, or nil when the recogniser
     /// reported none at all. Surfaced in the mic tooltip purely so the floor can
@@ -137,9 +128,17 @@ final class SpeechInputService: ObservableObject {
     /// Band energies for the composer spectrograph, low → high. Empty when idle.
     @Published private(set) var levels: [Float] = []
 
+    /// 0...1 while the on-device speech model is downloading, nil otherwise.
+    /// Only ever non-nil on first use of a locale.
+    @Published private(set) var downloadProgress: Double?
+
     /// Allocated once and reused — FFT setup is not free, and it must not be
     /// built inside the audio tap.
     private let meter = AudioLevelMeter()
+
+    /// Invalidates a session setup still in flight when a stop or cancel
+    /// arrives — see the guard in `start()`.
+    private var sessionGeneration = 0
 
     /// Proper nouns harvested from chat history, fed to the recogniser as
     /// contextual bias. See `SpokenVocabulary`.
@@ -222,17 +221,27 @@ final class SpeechInputService: ObservableObject {
     /// installation on the way; all of that is why this can sit in `.preparing`.
     func start() async {
         guard state == .idle else { return }
+        sessionGeneration += 1
+        let token = sessionGeneration
         errorMessage = nil
         finalizedText = ""
         volatileText = ""
         uncertainWords = []
         lastMinConfidence = nil
         lastWeakestWord = nil
-        isLatched = false
         setMuted(false)
         state = .preparing
         do {
             try await beginListening()
+            // Setup is async and takes real time — permission, assets, analyzer
+            // prepare. A stop or cancel can land in the middle of it, and
+            // without this the session finishes opening *after* being cancelled
+            // and the mic comes back to life on its own.
+            guard token == sessionGeneration else {
+                await teardown()
+                state = .idle
+                return
+            }
             state = .listening
         } catch {
             await teardown()
@@ -318,6 +327,9 @@ final class SpeechInputService: ObservableObject {
 
     /// Abandon the utterance and discard what was heard.
     func cancel() async {
+        // Bumped even when idle, so a start already setting itself up is
+        // invalidated rather than allowed to complete.
+        sessionGeneration += 1
         guard state != .idle else { return }
         closeAudio()
         inputContinuation?.finish()
@@ -461,12 +473,32 @@ final class SpeechInputService: ObservableObject {
             try await AssetInventory.reserve(locale: locale)
         }
         guard await AssetInventory.status(forModules: [transcriber]) != .installed else { return }
-        if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-            // First run only, and it is a real download — this is the whole
-            // reason `.preparing` is a distinct state. Progress reporting is
-            // available on `request.progress` when the download UX lands.
-            try await request.downloadAndInstall()
+        guard let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) else {
+            return
         }
+
+        // First run only, and it is a real download of a real model. An
+        // indeterminate spinner here is indistinguishable from a hang — the
+        // whole reason `.preparing` is its own state is that this can take
+        // minutes on a slow connection.
+        //
+        // Polled rather than KVO-observed: `Progress` posts its changes on
+        // whatever thread the downloader happens to be using, and a 200ms poll
+        // on the main actor is both smooth enough for a progress bar and free
+        // of the isolation dance.
+        let progress = request.progress
+        downloadProgress = 0
+        let ticker = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                self?.downloadProgress = progress.fractionCompleted
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
+        defer {
+            ticker.cancel()
+            downloadProgress = nil
+        }
+        try await request.downloadAndInstall()
     }
 
     private func consumeResults(from transcriber: SpeechTranscriber) {

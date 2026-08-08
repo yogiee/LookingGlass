@@ -2,6 +2,10 @@ import SwiftUI
 
 /// What the voice display is doing.
 enum SpectrographState: Equatable {
+    /// Voice mode is armed but not capturing — the mic is deliberately closed
+    /// until SPACE says otherwise, so there is nothing to draw and nothing is
+    /// being gathered.
+    case armed
     /// Mic open, drawing what it hears.
     case live
     /// Alice is thinking. The mic is deaf, so there is nothing real to draw —
@@ -46,13 +50,16 @@ struct SpectrographView: View {
             }
         }
         .frame(height: 34)
-        .opacity(state == .live ? 1 : 0.4)
+        // Armed sits lowest of all: nothing is being heard, and it should look
+        // like a mic that is deliberately closed rather than one that's failing.
+        .opacity(state == .live ? 1 : (state == .armed ? 0.28 : 0.4))
         .animation(.easeInOut(duration: 0.25), value: state)
         .accessibilityLabel(label)
     }
 
     private var label: String {
         switch state {
+        case .armed: return "Voice mode ready"
         case .live: return "Listening"
         case .processing: return "Alice is thinking"
         case .speaking: return "Alice is speaking"
