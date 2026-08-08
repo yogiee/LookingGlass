@@ -527,6 +527,28 @@ final class ConversationStore: ObservableObject {
         return (t, text)
     }
 
+    /// Every user-authored message, newest first, for spoken-vocabulary
+    /// harvesting. User messages only: we're biasing what *Yogi* says, and
+    /// Alice's replies would flood the frequency counts with her own phrasing.
+    /// Read off the main actor — this is the whole history, not one chat.
+    func userMessageCorpus(limit: Int = 3000) async -> [String] {
+        let queue = dbQueue
+        return await Task.detached(priority: .utility) {
+            Self.fetchUserMessages(dbQueue: queue, limit: limit)
+        }.value
+    }
+
+    nonisolated private static func fetchUserMessages(dbQueue: DatabaseQueue, limit: Int) -> [String] {
+        (try? dbQueue.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT content FROM messages
+                WHERE role = 'user' AND content != ''
+                ORDER BY rowid DESC
+                LIMIT ?
+                """, arguments: [limit])
+        }) ?? []
+    }
+
     nonisolated private static func storeConversationEmbedding(dbQueue: DatabaseQueue, conversationID: UUID,
                                                                vector: [Float], tag: String, hash: Int64) {
         let blob = SemanticSearchService.data(from: vector)
