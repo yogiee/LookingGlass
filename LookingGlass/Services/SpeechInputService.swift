@@ -229,6 +229,7 @@ final class SpeechInputService: ObservableObject {
         lastMinConfidence = nil
         lastWeakestWord = nil
         isLatched = false
+        setMuted(false)
         state = .preparing
         do {
             try await beginListening()
@@ -267,6 +268,52 @@ final class SpeechInputService: ObservableObject {
         await teardown()
         state = .idle
         return result
+    }
+
+    /// Take everything heard so far and **keep listening**.
+    ///
+    /// What "send" does in voice mode: the point of latching is that the mic
+    /// survives a message. Tearing the session down and rebuilding it would
+    /// re-prepare the analyzer between every sentence.
+    func commit() async -> Utterance {
+        guard state == .listening else { return await stop() }
+
+        // Flush anything still provisional. Without this the tail of the
+        // sentence finalises *after* the snapshot and turns up at the head of
+        // the next message instead.
+        try? await analyzer?.finalize(through: nil)
+        var waited = 0
+        while !volatileText.isEmpty && waited < 8 {
+            try? await Task.sleep(for: .milliseconds(50))
+            waited += 1
+        }
+
+        let result = Utterance(text: transcript, uncertain: uncertainWords)
+        finalizedText = ""
+        volatileText = ""
+        uncertainWords = []
+        return result
+    }
+
+    // MARK: - Half-duplex
+
+    /// True while Alice is talking, when the mic must be deaf.
+    ///
+    /// Half-duplex by design for v1: the alternative is echo cancellation via
+    /// `setVoiceProcessingEnabled`, which enables true barge-in but changes the
+    /// input format and so collides with the format-matching the recogniser
+    /// depends on. That is its own slice.
+    @Published private(set) var isMuted = false {
+        didSet { muteFlag.value = isMuted }
+    }
+
+    /// Read from the realtime audio thread, so it cannot be actor-isolated.
+    private let muteFlag = MuteFlag()
+
+    func setMuted(_ muted: Bool) {
+        guard muted != isMuted else { return }
+        isMuted = muted
+        if muted, let bands = meter?.decay() { levels = bands }
     }
 
     /// Abandon the utterance and discard what was heard.
@@ -341,7 +388,18 @@ final class SpeechInputService: ObservableObject {
         // recogniser, and 4096 frames is only ~12 updates/second — visibly
         // steppy. 2048 roughly doubles that for negligible extra cost.
         let meter = self.meter
+        let muted = self.muteFlag
         input.installTap(onBus: 0, bufferSize: 2048, format: tapFormat) { [weak self] buffer, _ in
+            // Half-duplex: while Alice speaks, her voice reaches this mic
+            // through the speakers. Dropping the buffer here — rather than
+            // stopping the engine — keeps the session and its warm model alive
+            // so listening resumes the instant she finishes.
+            if muted.value {
+                if let bands = meter?.decay() {
+                    Task { @MainActor in self?.levels = bands }
+                }
+                return
+            }
             // Realtime thread. The FFT is fixed-cost and allocation-free; only
             // the publish hops to the main actor.
             if let bands = meter?.bands(from: buffer) {
@@ -612,6 +670,15 @@ enum SpeechInputError: Error {
 }
 
 // MARK: - Format conversion
+
+/// A Bool the audio thread can read without actor isolation.
+///
+/// Same justification as `AudioConversion` below: the realtime tap callback
+/// cannot hop to the main actor to ask whether it should be listening, and a
+/// single Bool cannot tear.
+private final class MuteFlag: @unchecked Sendable {
+    var value = false
+}
 
 /// Resamples the mic tap into the analyzer's preferred format.
 ///

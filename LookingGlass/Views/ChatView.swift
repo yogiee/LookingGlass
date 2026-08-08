@@ -327,6 +327,9 @@ struct ChatView: View {
     /// Words the recogniser flagged, named in the review strip so a mis-tuned
     /// confidence floor is visible rather than silent.
     @State private var uncertainWords: [String] = []
+    /// Set when a turn is sent from latched voice mode, so the reply gets read
+    /// back. Consumed on stream end — a held-mic aside never narrates.
+    @State private var narrateNextReply = false
     /// The editor had focus when the lock engaged → restore it when the turn ends
     /// (never steals focus from another field, e.g. Settings → System Prompt).
     @State private var refocusAfterStream = false
@@ -367,6 +370,26 @@ struct ChatView: View {
         .onChange(of: catalog.models) { _, _ in reconcileModelOverride() }
         // Input lock lifecycle: remember whether the editor had focus when the turn
         // started, and hand focus back when it ends so typing can resume immediately.
+        // Read the reply back when the turn came from latched voice mode.
+        // Waits for the stream to finish rather than speaking as tokens arrive:
+        // sentence-buffered narration is its own problem, and a half-formed
+        // sentence read aloud is worse than a beat of silence.
+        .onChange(of: viewModel.isStreaming) { _, streaming in
+            guard !streaming, narrateNextReply else { return }
+            narrateNextReply = false
+            // Voice mode doesn't override the Read-aloud setting: if speech
+            // output is switched off, entering voice mode shouldn't start
+            // producing audio the user turned off elsewhere.
+            guard speechOutput.isEnabled else { return }
+            guard let reply = viewModel.messages.last,
+                  reply.role == .assistant, !reply.content.isEmpty else { return }
+            speechOutput.speak(reply.content, id: reply.id.uuidString)
+        }
+        // Half-duplex, in one place: the mic is deaf for exactly as long as
+        // Alice has the floor — thinking as well as talking.
+        .onChange(of: aliceHasTheFloor) { _, busy in
+            speechInput.setMuted(busy)
+        }
         .onChange(of: viewModel.isStreaming) { _, streaming in
             if streaming {
                 refocusAfterStream = inputFocused
@@ -695,7 +718,7 @@ struct ChatView: View {
                     SpectrographView(
                         levels: speechInput.levels,
                         tint: ComposerTint.voice,
-                        isMuted: speechOutput.isActive
+                        state: spectrographState
                     )
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
@@ -730,7 +753,10 @@ struct ChatView: View {
             // been replaced by tool cards and only STOP hinted that work continues.
             .overlay {
                 if viewModel.isStreaming {
-                    ProcessingShimmerBorder(cornerRadius: 16)
+                    ProcessingShimmerBorder(
+                        cornerRadius: 16,
+                        tint: composerMode.isVoice ? ComposerTint.voice : .accentColor
+                    )
                         .transition(.opacity)
                 }
             }
@@ -867,12 +893,21 @@ struct ChatView: View {
             // strip above the composer. One dim line: enough to catch a
             // disaster mid-sentence, not enough to become a second text field.
             if composerMode.isVoice {
-                Text(voiceTranscriptLine)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                    .padding(.leading, 6)
+                Group {
+                    if viewModel.isStreaming {
+                        // The mic is muted here, so "Listening…" would be a lie.
+                        // Alice's own thinking words belong in the composer once
+                        // it's the thing that's working.
+                        ThinkingLabel(font: .system(size: 11), tracking: 0)
+                    } else {
+                        Text(voiceTranscriptLine)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                    }
+                }
+                .padding(.leading, 6)
             } else if inputFocused {
                 Group {
                     FormatButton(icon: "bold", help: "Bold") { inputController.wrap(prefix: "**", suffix: "**") }
@@ -914,27 +949,36 @@ struct ChatView: View {
             // doubted, in which case it lands in the composer instead and waits.
             // The system asks for help only when it knows it needs it.
             MicButton(isDisabled: viewModel.isStreaming) { utterance in
-                let typed = viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-                viewModel.inputText = typed.isEmpty ? utterance.text : typed + " " + utterance.text
-                if utterance.needsReview {
-                    dictationUnderReview = utterance.text
-                    uncertainWords = utterance.uncertain
-                    inputController.focus()
-                } else {
-                    submit(source: .dictated)
-                }
+                // Switching the mic off mid-utterance still delivers what it
+                // heard; narration is decided by whether voice was latched.
+                deliver(utterance, narrate: speechInput.isLatched)
             }
             .padding(.trailing, 4)
 
             Button {
-                if viewModel.isStreaming { viewModel.cancelStream() } else { submit() }
+                if viewModel.isStreaming {
+                    viewModel.cancelStream()
+                } else if speechOutput.isActive {
+                    // While Alice narrates, send *is* stop — she's the only
+                    // thing in flight, and the mic un-mutes the moment she ends.
+                    speechOutput.stop()
+                } else if composerMode.isVoice {
+                    sendFromVoice()
+                } else {
+                    submit()
+                }
             } label: {
-                Image(systemName: viewModel.isStreaming ? "stop.circle.fill" : "arrow.up.circle.fill")
+                Image(systemName: sendButtonIsStop ? "stop.circle.fill" : "arrow.up.circle.fill")
                     .font(.system(size: 32))
-                    .foregroundStyle(viewModel.isStreaming ? Color.red : Color.accentColor)
+                    .foregroundStyle(sendButtonIsStop ? Color.red : Color.accentColor)
             }
             .buttonStyle(.plain)
-            .disabled(!viewModel.isStreaming && viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && pendingAttachment == nil)
+            // In voice mode the composer is empty by definition — what would be
+            // sent lives in the transcript, so the text-emptiness test doesn't
+            // apply.
+            .disabled(!sendButtonIsStop && !composerMode.isVoice
+                      && viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      && pendingAttachment == nil)
         }
         .padding(.horizontal, 10)
         .padding(.top, 2)
@@ -969,6 +1013,51 @@ struct ChatView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var sendButtonIsStop: Bool { viewModel.isStreaming || speechOutput.isActive }
+
+    /// Alice has the floor: thinking or talking. The mic is deaf for all of it.
+    ///
+    /// Muting only while she *spoke* was too narrow — between send and her first
+    /// token the mic stayed live, so the display kept reacting to room noise
+    /// while nothing was being listened to. Reacting to sound nobody is
+    /// listening to is worse than showing nothing.
+    private var aliceHasTheFloor: Bool { viewModel.isStreaming || speechOutput.isActive }
+
+    private var spectrographState: SpectrographState {
+        if viewModel.isStreaming { return .processing }
+        if speechOutput.isActive { return .speaking }
+        return .live
+    }
+
+    /// Send without leaving voice mode: snapshot what's been heard, keep the
+    /// mic open, and let the next sentence start straight away.
+    private func sendFromVoice() {
+        Task {
+            let utterance = await speechInput.commit()
+            deliver(utterance, narrate: composerMode.narratesReplies)
+        }
+    }
+
+    /// The single path a finished utterance takes, whether it came from the mic
+    /// switching off or from send-in-voice-mode.
+    private func deliver(_ utterance: SpeechInputService.Utterance, narrate: Bool) {
+        let text = utterance.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let typed = viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        viewModel.inputText = typed.isEmpty ? text : typed + " " + text
+
+        if utterance.needsReview {
+            // Hand it over for correction instead of sending. The spectrograph
+            // yields to the text field for as long as this is pending.
+            dictationUnderReview = text
+            uncertainWords = utterance.uncertain
+            inputController.focus()
+            return
+        }
+        narrateNextReply = narrate
+        submit(source: .dictated)
     }
 
     /// Truncated from the head, so the tail — the words just spoken — stays put
