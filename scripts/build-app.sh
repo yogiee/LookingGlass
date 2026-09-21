@@ -128,7 +128,7 @@ cat > "$APP/Contents/Info.plist" << PLIST
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>$VERSION</string>
 	<key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
-	<key>LSMinimumSystemVersion</key><string>26.0</string>
+	<key>LSMinimumSystemVersion</key><string>27.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSHumanReadableCopyright</key><string>Copyright © 2026 Yogi. All rights reserved.</string>
 	<key>LSUIElement</key><false/>
