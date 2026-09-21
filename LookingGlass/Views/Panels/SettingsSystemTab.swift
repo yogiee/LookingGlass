@@ -296,7 +296,7 @@ struct SettingsSystemTab: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("4× image upscaler")
                             .font(.system(size: 12, weight: .medium))
-                        Text("On-device RealPLKSR super-resolution — adds real detail to a generated image in the viewer (an “Upscale 4×” button appears). Downloads a ~30 MB model once.")
+                        Text("Apple's on-device super-resolution, built into macOS — enlarges an image in the viewer 4× (an “Upscale 4×” button appears), with a Detail slider for sharpness. Works on images up to \(SuperResolutionService.maxSide) px per side. Nothing to host: if the model isn't on this Mac yet, macOS downloads it once.")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
@@ -307,29 +307,24 @@ struct SettingsSystemTab: View {
                     Text(msg).font(.system(size: 10)).foregroundStyle(.red)
                 }
             }
+            .onAppear { upscaler.refresh() }   // macOS may have fetched the model since launch
         }
     }
 
     @ViewBuilder private var upscalerControl: some View {
         switch upscaler.status {
-        case .notInstalled, .failed:
+        case .needsDownload, .failed:
             Button("Download") { Task { await upscaler.install() } }
         case .downloading(let p):
             HStack(spacing: 6) {
                 ProgressView(value: p).frame(width: 90)
                 Text("\(Int(p * 100))%").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
             }
-        case .compiling:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Preparing…").font(.system(size: 10)).foregroundStyle(.secondary)
-            }
         case .ready:
-            HStack(spacing: 8) {
-                Label("Installed", systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 11)).foregroundStyle(.green)
-                Button("Remove") { upscaler.remove() }.controlSize(.small)
-            }
+            Label("Ready", systemImage: "checkmark.circle.fill")
+                .font(.system(size: 11)).foregroundStyle(.green)
+        case .unsupported:
+            Text("Not available on this Mac").font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }
 

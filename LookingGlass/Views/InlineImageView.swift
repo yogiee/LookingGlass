@@ -216,13 +216,13 @@ struct LightboxView: View {
     @State private var cropRect = CoreImageService.fullCrop   // normalized, top-left origin
     @State private var cropStart = CGRect.zero
     @State private var cropDragging = false
-    @ObservedObject private var sr = SuperResolutionService.shared   // RealPLKSR 4× (Slice 3)
+    @ObservedObject private var sr = SuperResolutionService.shared   // Apple 4× super-resolution (Slice 3)
     @State private var isUpscaling = false
     @State private var upscaleReview = false          // 3b: reviewing an upscale result
-    @State private var upscaledImage: NSImage?
-    @State private var lanczosImage: NSImage?
+    @State private var plainUpscale: NSImage?          // Apple's 4× result as it comes
+    @State private var sharpUpscale: NSImage?          // the same with the full Detail sharpen
     @State private var blendedImage: NSImage?
-    @State private var upscaleStrength: Double = 0.75   // Detail slider POSITION 0…1 (→ detailBlend); .75 = 85% RealPLKSR
+    @State private var upscaleStrength: Double = 0.75   // Detail slider POSITION 0…1 (→ detailFraction); .75 = sharpness 1.6
     @State private var exportFormat: CoreImageService.ExportFormat = .png
     @State private var previewImage: NSImage?            // Core Image-rendered quality preview
     @State private var baseImage: NSImage?               // the original, loaded once
@@ -432,6 +432,7 @@ struct LightboxView: View {
                 // Header-only read (CIImage is lazy), so this is cheap — and it lets
                 // layoutSize/fitScale settle BEFORE any bitmap exists.
                 originalPixelSize = CoreImageService.pixelSize(path: path) ?? .zero
+                sr.refresh()   // the upscaler's model is macOS's; it may have arrived since launch
                 // Draw the already-decoded inline thumbnail immediately. The full-res
                 // decode happens off-main in .task below and swaps in when ready.
                 //
@@ -502,11 +503,11 @@ struct LightboxView: View {
             }
             // Re-blend the upscale result when Detail changes (debounced, off-main).
             .task(id: upscaleReview ? "\(upscaleStrength)" : "off") {
-                guard upscaleReview, let e = upscaledImage, let l = lanczosImage else { return }
+                guard upscaleReview, let sharp = sharpUpscale, let plain = plainUpscale else { return }
                 try? await Task.sleep(for: .milliseconds(80))
                 guard !Task.isCancelled else { return }
-                let s = detailBlend(upscaleStrength)   // slider position → clamped RealPLKSR fraction
-                let blended = await Task.detached { CoreImageService.blend(l, over: e, amount: s) }.value
+                let t = detailFraction(upscaleStrength)   // slider position → share of the full sharpen
+                let blended = await Task.detached { CoreImageService.blend(plain, over: sharp, amount: t) }.value
                 guard !Task.isCancelled else { return }
                 blendedImage = blended
             }
@@ -612,8 +613,10 @@ struct LightboxView: View {
             Button { Task { await runUpscale() } } label: {
                 Image(systemName: "wand.and.stars")
             }
-            .disabled(!sr.isReady || isUpscaling)
-            .help(sr.isReady ? "Upscale 4× (RealPLKSR)" : "Enable the 4× upscaler in Settings → Images")
+            .disabled(!sr.isReady || isUpscaling || !sr.canUpscale(originalPixelSize))
+            .help(!sr.isReady ? "Enable the 4× upscaler in Settings → Images"
+                  : sr.canUpscale(originalPixelSize) ? "Upscale 4×"
+                  : "Upscaling works on images up to \(SuperResolutionService.maxSide) px per side")
         }
         .buttonStyle(.borderless)
         .font(.system(size: 13))
@@ -723,32 +726,30 @@ struct LightboxView: View {
 
     // MARK: Upscale (Slice 3) + review (Slice 3b)
 
-    /// Maps the Detail slider position (0…1) to the RealPLKSR-fraction fed to `CoreImageService.blend`
-    /// (1 = all RealPLKSR, 0 = all Lanczos). Deliberately non-linear and clamped so NEITHER end is a
-    /// wasted option: at 0 we still keep 50% RealPLKSR (pure Lanczos would throw away the neural pass),
-    /// and at 1 we keep 5% Lanczos (pure output of a small, speed-tuned model shows edge overshoot the
-    /// blend exists to soften). Anchors (position → RealPLKSR): 0→.50, .50→.75, .75→.85 (default), 1→.95;
-    /// piecewise-linear between them (a touch more sensitive below the midpoint, matching how it reads).
-    private func detailBlend(_ pos: Double) -> Double {
+    /// Maps the Detail slider position (0…1) to how much of the full sharpen (`SuperResolutionService.
+    /// maxSharpness`, 3.0) to blend over Apple's plain result. A dissolve between the plain and fully sharpened
+    /// images is the same as sharpening less (measured: mean difference 0.2/255), so the old blend plumbing
+    /// drives it. Anchors (position → sharpness): 0 → 0 (Apple as it comes, the most faithful), .75 → 1.6
+    /// (default, the recovery test's best), 1 → 3.0 (crisper; still closer to the original than no sharpen).
+    /// Every position is a reasonable result; piecewise-linear between the anchors.
+    private func detailFraction(_ pos: Double) -> Double {
         let p = min(max(pos, 0), 1)
-        switch p {
-        case ..<0.50: return 0.50 + (p / 0.50) * (0.75 - 0.50)            // 0…½   → .50…​.75
-        case ..<0.75: return 0.75 + ((p - 0.50) / 0.25) * (0.85 - 0.75)  // ½…¾   → .75…​.85
-        default:      return 0.85 + ((p - 0.75) / 0.25) * (0.95 - 0.85)  // ¾…1   → .85…​.95
-        }
+        let sharpness = p < 0.75 ? (p / 0.75) * 1.6 : 1.6 + ((p - 0.75) / 0.25) * (3.0 - 1.6)
+        return sharpness / SuperResolutionService.maxSharpness
     }
 
-    /// Run RealPLKSR 4× + a Lanczos 4× (for the Detail blend), then enter the review overlay.
+    /// Run Apple's 4× (plain + fully sharpened), then enter the review overlay.
     private func runUpscale() async {
         isUpscaling = true
-        let data = await SuperResolutionService.shared.upscale(path: path)
-        guard let data, let upscaled = NSImage(data: data) else { isUpscaling = false; return }
-        let lanczos = CoreImageService.preview(path: path, scale: 4, sharpen: false)   // spinner still up
+        let result = await SuperResolutionService.shared.upscale(path: path)
         isUpscaling = false
-        upscaledImage = upscaled; lanczosImage = lanczos
-        // Default slider position .75 → 85% RealPLKSR / 15% Lanczos (see detailBlend) — the sweet spot
-        // that dampens edge overshoot without losing detail. The .task(id:) re-blends to it immediately.
-        upscaleStrength = 0.75; blendedImage = upscaled
+        guard let result else { return }
+        let size = NSSize(width: result.plain.width, height: result.plain.height)
+        plainUpscale = NSImage(cgImage: result.plain, size: size)
+        sharpUpscale = NSImage(cgImage: result.sharpened, size: size)
+        // Default slider position .75 → sharpness 1.6 (see detailFraction). The .task(id:) blends to it
+        // immediately; the plain result stands in for the moment that takes.
+        upscaleStrength = 0.75; blendedImage = plainUpscale
         resizeMode = false; cropMode = false; compareMode = false
         zoom = 1; lastZoom = 1; offset = .zero; lastOffset = .zero
         withAnimation(.easeInOut(duration: 0.15)) { upscaleReview = true }
@@ -760,7 +761,7 @@ struct LightboxView: View {
         return "\(Int(b.size.width)) × \(Int(b.size.height))"
     }
 
-    /// Review controls: Detail (RealPLKSR↔Lanczos blend) · Compare · Save As · Apply · Cancel.
+    /// Review controls: Detail (plain ↔ sharpened blend) · Compare · Save As · Apply · Cancel.
     private var reviewControls: some View {
         HStack(spacing: 14) {
             Image(systemName: "wand.and.stars").foregroundStyle(.secondary)
@@ -819,7 +820,7 @@ struct LightboxView: View {
 
     private func exitReview() {
         withAnimation(.easeInOut(duration: 0.15)) { upscaleReview = false; compareMode = false }
-        upscaledImage = nil; lanczosImage = nil; blendedImage = nil; upscaleStrength = 0.75
+        plainUpscale = nil; sharpUpscale = nil; blendedImage = nil; upscaleStrength = 0.75
         refit()
     }
 
