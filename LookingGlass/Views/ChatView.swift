@@ -385,6 +385,13 @@ struct ChatView: View {
         // sentence-buffered narration is its own problem, and a half-formed
         // sentence read aloud is worse than a beat of silence.
         .onChange(of: viewModel.isStreaming) { _, streaming in
+            // A narrated turn has just started: warm the voice now, in parallel with the chat model's
+            // reply, so narration starts in ~0.3 s instead of paying a model load after the reply lands.
+            // Free on the system engine; the neural voice may have been released after idling.
+            if streaming, narrateNextReply, speechOutput.isEnabled {
+                Task { await speechOutput.warmUp() }
+                return
+            }
             guard !streaming, narrateNextReply else { return }
             narrateNextReply = false
             // Voice mode doesn't override the Read-aloud setting: if speech

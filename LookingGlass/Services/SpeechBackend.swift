@@ -102,7 +102,10 @@ enum SpeechActivity: Equatable {
 enum SpeechBackendID: String, CaseIterable, Sendable {
     /// `AVSpeechSynthesizer` — always present, no download, no load.
     case system
-    // Reserved: `case neural` for the sidecar-hosted MLX engine.
+    /// Alice's cloned voice: Qwen3-TTS on MLX in the sidecar (the QUALITY / QUALITY+ tiers).
+    case neural
+    /// Kokoro-82M on Core AI, in-process on the CPU (the LIGHT tier, once downloaded).
+    case kokoro
 }
 
 /// An engine that can turn plain text into speech.
@@ -153,4 +156,16 @@ protocol SpeechBackend: AnyObject {
 
     /// Cancel anything in flight. Must still deliver the pending `onFinish`.
     func stop()
+
+    /// Change the pace of what is playing NOW, as a multiple of natural pace.
+    ///
+    /// For the report viewer's slider, which must act mid-sentence: a change that waited for the next
+    /// sentence reads as "the slider did nothing" when the current one is long. Engines that can't
+    /// retime audio already in flight (the system engine sets rate per utterance) keep the default no-op
+    /// and pick the new rate up on the next `speak`.
+    func setRate(_ rate: Double)
+}
+
+extension SpeechBackend {
+    func setRate(_ rate: Double) {}
 }

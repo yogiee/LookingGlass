@@ -8,7 +8,6 @@ struct SettingsSystemTab: View {
     @AppStorage("appleIntelligenceEnabled") private var appleIntelligenceEnabled = true
     @AppStorage("semanticSearchEnabled") private var semanticSearchEnabled = false
     @AppStorage(SpeechOutputService.Keys.enabled) private var voiceOutputEnabled = true
-    @AppStorage(SpeechOutputService.Keys.voice) private var ttsVoiceIdentifier = ""
     @AppStorage(SpeechOutputService.Keys.rate) private var ttsRate = 0.5
     @ObservedObject private var speech = SpeechOutputService.shared
     @AppStorage("ocrPastedImages") private var ocrPastedImages = true
@@ -25,8 +24,6 @@ struct SettingsSystemTab: View {
 
     @State private var tools: [ToolInfo] = []
     @State private var loadingTools = true
-    /// Enumerated once — the system engine vends ~180 entries across 44 locales.
-    @State private var voices: [VoiceOption] = []
     @State private var promptExpanded = false
     @State private var showingPromptImporter = false
 
@@ -66,17 +63,11 @@ struct SettingsSystemTab: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .task { await loadTools() }
-        // Free on the system engine; on a backend with a model to load this is
-        // what keeps the Preview button from stalling on first press.
-        .task { await speech.warmUp() }
-        .onAppear { voices = speech.voices() }
-        // Downloading a voice happens in System Settings, so the new one only exists
-        // once we come back — re-enumerate on reactivation rather than showing a
-        // stale list right after the user acted on the hint below.
-        .onReceive(NotificationCenter.default.publisher(
-            for: NSApplication.didBecomeActiveNotification
-        )) { _ in
-            voices = speech.voices()
+        // Re-read the voice engine (installs, AUTO's answer), then warm whatever is in effect: free on
+        // the system engine; on Alice's neural voice it's what keeps Preview from stalling on first press.
+        .task {
+            await speech.refresh()
+            await speech.warmUp()
         }
     }
 
@@ -92,29 +83,10 @@ struct SettingsSystemTab: View {
             }
 
             if voiceOutputEnabled {
-                voicePicker
+                // Tier, models, the voice in use (Kokoro's packs or the built-in stand-in) and Alice's clip.
+                VoiceTierSettings(speech: speech)
                 rateSlider
                 previewRow
-                if let hint = speech.upgradeHint {
-                    upgradeHintRow(hint)
-                }
-            }
-        }
-    }
-
-    private var voicePicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Picker("Voice", selection: $ttsVoiceIdentifier) {
-                Text("Automatic").tag("")
-                Divider()
-                ForEach(voices) { voice in
-                    Text(voice.label).tag(voice.id)
-                }
-            }
-            if ttsVoiceIdentifier.isEmpty, let auto = speech.defaultVoice() {
-                Text("Automatic picks the best installed voice — currently \(auto.name) (\(auto.language)).")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -156,23 +128,6 @@ struct SettingsSystemTab: View {
         "This is how I'll sound when I read something back to you. "
         + "Long answers, short ones, whatever you send my way."
 
-    /// Whatever the active engine offers as its "this could sound better"
-    /// nudge — free voice downloads on the system engine, a model download on a
-    /// neural one. The view doesn't know or care which.
-    private func upgradeHintRow(_ hint: SpeechUpgradeHint) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(hint.message)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-            Button(hint.buttonTitle) { hint.action() }
-                .font(.system(size: 11))
-            if let detail = hint.detail {
-                Text(detail)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
 
     // MARK: Personality
 
