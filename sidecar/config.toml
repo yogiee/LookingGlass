@@ -1,35 +1,20 @@
 [model]
-# Chat default. 2026-06-19: gemma4:12b → gemma4:26b (GGUF). Measured on M1 Max 32GB:
-# 48.5 tok/s (faster than 12b@23.7 AND 26b-mlx@43.3), 17GB 100% GPU, honest + full Alice
-# voice. CRUCIALLY GGUF honors num_ctx → KV is leashed (CONTEXT 16384, bounded regardless
-# of chat length); the MLX path IGNORES num_ctx (unbounded KV → OOM risk on marathon chats)
-# so 26b-mlx was rejected as default despite similar speed. Same gemma4 family = same voice.
-# Cost: 17GB resident during active use (unloads after keep_alive idle). 12b stays the lean
-# fallback; gemma4:latest is a per-chat pick via Settings → Model. (qwen3.5:4b-mlx dropped
-# 2026-06-22 per the manifest keep_policy — fast but confabulates world-knowledge.)
-# See gotcha_small_model_confabulation + reference_ollama_cloud_models (MLX num_ctx gotcha).
+# Base chat default. Mirrors [models].default below — change both together.
 #
-# 2026-06-29 UPDATE: the overnight bench (benchllama@06-29) REVERSED 26b-mlx's standing as a
-# *build*: MLX now wins prefill (726 vs 382), wall (7.6 vs 8.6s), footprint (16.4 vs 17.4GB)
-# AND holds prefill at depth (Battery-G collapse 0.948 vs 0.442 @32k). Quality is a tie
-# (coding 1.000 vs 0.983; Alice-voice smoke-test ✓ on the 4 standard Qs). So the STABLE-LOCK
-# revert default below now points at gemma4:26b-mlx. The ONE un-retired caveat keeps THIS live
-# base on GGUF: MLX still ignores num_ctx, so the 16384 KV leash is a no-op (bench validated
-# only to 32k filled, not marathon chats) — GGUF here = bounded KV. See project_consumer_manifest.
-# 2026-07-02 (first CLEAN re-run, no clobber): swap CONFIRMED — prefill 730 vs 473, G-collapse
-# 0.972 vs 0.44 hold; quality a wash. The two 06-29 caveats were single-run noise: the "MLX fails
-# D6 parallel" did NOT reproduce, and consistency FLIPPED to GGUF (F 0.916 vs 0.869) — each build
-# won one run, so call F a wash and keep MLX on speed/size/long-ctx. Rationale unchanged.
-# 2026-07-02 OUR-OWN A/B (gotcha_mlx_gguf_numctx_truncation): per-token prefill is EQUAL between the
-# builds in real Ollama serving — MLX's long-context edge is FIDELITY (it processes the full context)
-# not raw speed. THIS live base stays GGUF precisely because it leashes KV: bounded RAM, and it
-# truncates long inputs (bounded-but-lossy) — the right behavior for an always-on chat default.
-# 2026-07-06: base default aligned to the fleet default (voice+hands collapse). Was gemma4:26b (GGUF,
-# num_ctx-leashed); now gemma4:12b-mlx — the tool-native fleet default. 26b GGUF de-pinned from LG's roster
-# (OllamaMCP still owns it: its local_vision#fallback1 + chat fallback). Tradeoff: MLX ignores num_ctx
-# (unbounded KV), but 12b is small so marathon-chat KV stays manageable. Offline deep-research tail stays
-# gemma4:26b-mlx (see [models] comment + the LG consumer manifest). Roster review: gemma4_moe_speed_and_mlx_fit.
-# 2026-07-08: base default aligned to the ornith voice+hands trial (was gemma4:12b-mlx); revert together with [models].default.
+# WHY MLX HERE, and the one caveat that matters. Our own A/B (2026-07-02,
+# gotcha_mlx_gguf_numctx_truncation): per-token prefill is EQUAL between the MLX and GGUF builds in
+# real Ollama serving — MLX's long-context edge is FIDELITY, not speed. MLX processes the full
+# context; GGUF at num_ctx=16384 SILENTLY TRUNCATES a long input (~17.5k tok -> ~8k).
+#   • GGUF  = bounded KV (honors num_ctx), bounded-but-LOSSY on long inputs.
+#   • MLX   = faithful full-context, but IGNORES num_ctx → unbounded KV on marathon chats.
+# We take MLX and accept the unbounded-KV risk because faithful context matters more for research
+# than a RAM leash, and Battery G (08-21) shows 26b-mlx holding accuracy 1.00 through 32K with the
+# mildest prefill collapse of any local model (0.872). Watch RAM on marathon chats.
+#
+# History, one line each (reasoning lives in the memories): 06-19 gemma4:12b → gemma4:26b GGUF;
+# 06-29/07-02 GGUF → 26b-mlx on clean re-runs; 07-06 → 12b-mlx (collapse trial); 07-08 → ornith:9b
+# (trial, reverted — fabricates + freezes); 07-09 → back to 26b-mlx, where it has stayed.
+# Refs: gemma4_moe_speed_and_mlx_fit, gotcha_mlx_gguf_numctx_truncation, project_consumer_manifest.
 default = "gemma4:26b-mlx"
 ollama_host = "http://localhost:11434"
 think = false
@@ -104,21 +89,27 @@ keep_alive = "5m"
 #   research   = "gpt-oss:120b-cloud"
 #   specialist = "gemma4:31b-cloud"
 [models]
-# 2026-07-06 VOICE+HANDS COLLAPSE (trial). default flipped ZINI → gemma4:12b-mlx: it out-behaves ZINI on
-# every lite.py axis (4/4, confab-clean, register TIGHT) AND is tool-native (2/2 grounding), so the
-# silent-hands butler is now DORMANT for default turns (the voice model calls tools directly). Cost: chat
-# decode 63→34 t/s (still ~5× reading speed) + warmth is the one unmeasured axis → this is a living-on-it
-# trial. REVERT: set default back to "s80982708/ZINI-LOCAL:latest" (kept on disk). Refs:
-# gemma4_moe_speed_and_mlx_fit / lite_bench_voice_eval_2026-07 / design_model_grading_table.
+# LIVE CONFIG: SIMPLE mode — "one big model does all" (2026-07-09). One tool-capable model is voice
+# AND work, so it calls tools directly: the model that talks is the model that called the tool, which
+# removes the whole plating-fabrication failure class. Re-verified against benchllama@2026-08-21.
 #
-# 2026-07-08 ORNITH VOICE+HANDS TRIAL — default → ornith:9b (supersedes the 07-06 gemma trial above).
-# Full eval passed (candidate_zini_tool_caller_companions 07-08a..f): confab N=5 0.89 (>ZINI 0.73), organic
-# voice > deployed Alice, register TIGHT with the brevity clause, tool-native (self-serves → butler dormant),
-# RAM co-resident with image-gen = 18.4GB, and the with-tools pressure re-test CLEARED (holds honestly when
-# the search returns empty — no D4b fabrication). qwen3.5-arch → think=false (global) honored cleanly.
-# NEEDS the 2 Alice-prompt clauses (LENGTH + tool-discipline) pasted into Settings → Personality.
-# REVERT ladder (all on disk): ornith:9b → gemma4:12b-mlx (07-06 trial) → s80982708/ZINI-LOCAL:latest.
-default       = "gemma4:26b-mlx"   # 07-09 "ONE BIG MODEL" (Yogi's Simple mode): gemma4:26b-mlx is voice+work. Tool-CAPABLE → calls tools DIRECTLY (no hands, no plating-fabrication), GROUNDS instead of inventing (unlike ZINI/ornith), great voice, environment-aware. Cost: 17.6GB RAM (image-gen co-load handled by unload-before-image, see agent.py) + rare persona-slip. Revert ladder: gemma4:26b-mlx → ZINI+gemma-hands → gemma4:12b-mlx.
+# SUPERSEDED HISTORY (kept as one line each; the reasoning lives in the memories, not here):
+#   06-19..07-05  stable single-model lock, gemma4:26b GGUF → 26b-mlx. See gemma4_moe_speed_and_mlx_fit.
+#   07-06         voice+hands collapse trial: ZINI → gemma4:12b-mlx. Superseded.
+#   07-08         ornith:9b voice+hands trial. Superseded — ornith fabricates + freezes in practice;
+#                 see candidate_zini_tool_caller_companions for how that one ended.
+#   07-09         → this config. gemma4:26b-mlx everywhere local.
+#
+# REVERT LADDER: gemma4:26b-mlx → gemma4:12b-mlx (lean local, 7.6GB / 34.3 t/s, still on disk and
+# still protected in ~/.config/ollama-consumers/lookingGlass.json).
+# ⚠ The ZINI rung that used to sit in this ladder is DISQUALIFIED ON EVIDENCE, not just out of favour:
+# BenchLLAMA Battery G (08-21) puts ZINI's clean context depth at 8192 — accuracy 1.00 @8K → 0.25 @16K
+# → 0.00 @32K — against the num_ctx=16384 we actually run. It would lose the thread in ordinary long
+# chats. Do not restore it as a voice without re-measuring.
+#
+# ⚠ WHEN YOU CHANGE ANYTHING BELOW, also update ~/.config/ollama-consumers/lookingGlass.json —
+# BenchLLAMA reads it to decide which models it may drop from disk.
+default       = "gemma4:26b-mlx"   # voice + work in one tool-capable model. Grounds instead of inventing (unlike ZINI/ornith), good voice, environment-aware. Cost: 17.2GB resident while active (image-gen co-load handled by unload-before-image, see agent.py) + rare persona-slip. Ladder above.
 coding        = "gemma4:26b-mlx"   # one-big-model: same capable model does code (was 12b-mlx)
 research      = "gemma4:26b-mlx"   # one-big-model: same capable model does research (was 12b-mlx)
 # deep_research availability/privacy fallback chain (runtime uses the primary; the local tail is a
