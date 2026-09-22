@@ -500,12 +500,14 @@ class AgentConfig:
     models: dict = field(default_factory=dict)  # global [models] routing table
 
 
-def _ambient_context(extra: dict | None = None) -> str:
+def _ambient_context(extra: dict | None = None, model: str | None = None) -> str:
     """Alice's ENVIRONMENT — what's true RIGHT NOW, so she doesn't guess or fall back on her training
     cutoff (the wrong-year fabrications). This is her 'home': she should know the ground she stands on,
     not just the tools she can call.
 
-    Phase 1 (here, sidecar, zero-permission): date + local time + timezone/region.
+    Phase 1 (here, sidecar, zero-permission): date + local time + timezone/region + the model voicing
+    this turn. Without that last line, "which model are you?" had nothing true to answer from and gemma4
+    fell back to its stock model-card line, dropping Alice's voice entirely (2026-09-23 probes).
     Phase 2 (later): the Swift app passes precise location (CoreLocation), weather (WeatherKit), and
     device state via `extra` — they merge in below with no further change here.
     """
@@ -521,6 +523,12 @@ def _ambient_context(extra: dict | None = None) -> str:
         f"- Date: {now.strftime('%A, %B %-d, %Y')}",
         f"- Local time: {now.strftime('%-I:%M %p')} ({part})" + (f", timezone {tz}" if tz else ""),
     ]
+    if model:
+        # The anchor sentence is load-bearing, not decoration: on gemma4:12b-mlx a bare model line made
+        # "Who are you?" open with "I'm Gemma 4…" 9/10 times; with the anchor, 1/10 (no line: 0/10).
+        where = (" for this turn: {m} (a cloud model via Ollama, off this Mac)" if _is_cloud_model(model)
+                 else ": {m} (local, on this Mac via Ollama)").format(m=model)
+        lines.append(f"- Alice's engine{where}. You are Alice; the engine is only what you run on.")
     for k, v in (extra or {}).items():
         if v:
             lines.append(f"- {str(k).replace('_', ' ').capitalize()}: {v}")
@@ -619,7 +627,7 @@ async def chat_stream(
     # Situate Alice in her environment (date/time/timezone) so she doesn't guess or fall back on her
     # training cutoff — the root of the wrong-year fabrications. Extensible via _ambient_context(extra):
     # Swift can later add precise location + weather + device state. (2026-07-09; fix_current_date_injection)
-    base_prompt = _ambient_context(environment) + "\n\n" + base_prompt
+    base_prompt = _ambient_context(environment, resolved_model) + "\n\n" + base_prompt
 
     # Output scope: explicit working_dir → project folder → user's configured
     # files root (independent chats) → default ~/Documents/LookingGlass. Tool
