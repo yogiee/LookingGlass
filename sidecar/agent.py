@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import re
@@ -52,6 +53,77 @@ async def _model_supports_tools(client: httpx.AsyncClient, host: str, model: str
         ok = True
     _TOOL_CAP_CACHE[model] = ok
     return ok
+
+
+# Native vision (2026-09-22). A vision-capable LOCAL model (the gemma4 family) sees the images the
+# user shares directly — Ollama's per-message `images` — instead of the describe_image hop through a
+# second model (qwen2.5vl:3b). Measured on 13 real inputs: 88% vs 83% correct, ~6 s vs ~32 s per image,
+# and no second model loaded (WORKSPACE/vision-eval-2026-09-22). describe_image remains the path for
+# models without vision and for cloud models, which have only ever received a local model's text
+# description of an image — never the pixels.
+_VISION_CAP_CACHE: dict[str, bool] = {}
+_IMAGE_MARKER = re.compile(r"\[Image:\s*([^\]]+)\]")
+_MAX_NATIVE_IMAGES = 6                     # gemma4 spends ~260 prompt tokens per image → ~1.6K of 16K
+_MAX_NATIVE_IMAGE_BYTES = 20 * 1024 * 1024
+
+_NATIVE_VISION_NOTE = (
+    "## Images\n"
+    "Images the user shares are attached to their messages and you can see them directly. Look at "
+    "the image yourself and answer from what you see — don't call describe_image for an image you can "
+    "already see. That tool is only for an older image that still appears as an `[Image: …]` path."
+)
+
+
+def _is_cloud_model(model: str) -> bool:
+    """Ollama cloud models are tagged `…:cloud` or `…-cloud` (e.g. gemma4:31b-cloud). /api/show doesn't
+    mark them as remote, and they can report `vision` too, so the tag is the signal."""
+    tag = model.rsplit(":", 1)[1] if ":" in model else ""
+    return tag == "cloud" or tag.endswith("-cloud")
+
+
+async def _model_supports_vision(client: httpx.AsyncClient, host: str, model: str) -> bool:
+    """Whether `model` advertises Ollama's 'vision' capability. Cached per model. Fail-CLOSED, unlike
+    tools: the describe_image path works for every model, so a probe error just keeps it (uncached)."""
+    if model in _VISION_CAP_CACHE:
+        return _VISION_CAP_CACHE[model]
+    try:
+        r = await client.post(f"{host}/api/show", json={"model": model}, timeout=5.0)
+        ok = "vision" in (r.json().get("capabilities") or [])
+    except Exception:
+        return False
+    _VISION_CAP_CACHE[model] = ok
+    return ok
+
+
+def _attach_images_natively(messages: list[dict]) -> tuple[list[dict], int]:
+    """A copy of `messages` where the newest user-shared images (up to _MAX_NATIVE_IMAGES) move from
+    their `[Image: /path]` markers into Ollama's `images` field. Older images keep their marker, so
+    describe_image can still read them on demand; so does a marker whose file is gone (attachments
+    currently live in the temp dir) or is too large. Returns (messages, number of images attached)."""
+    out = [dict(m) for m in messages]
+    budget = _MAX_NATIVE_IMAGES
+    for m in reversed(out):
+        if budget <= 0:
+            break
+        if m.get("role") != "user" or "[Image:" not in (m.get("content") or ""):
+            continue
+        content, images = m["content"], []
+        for match in _IMAGE_MARKER.finditer(m["content"]):
+            if budget <= 0:
+                break
+            path = Path(match.group(1).strip()).expanduser()
+            try:
+                if not path.is_file() or path.stat().st_size > _MAX_NATIVE_IMAGE_BYTES:
+                    continue
+                images.append(base64.b64encode(path.read_bytes()).decode("ascii"))
+            except OSError:
+                continue
+            content = content.replace(match.group(0), "", 1)
+            budget -= 1
+        if images:
+            m["images"] = images
+            m["content"] = content.strip()
+    return out, _MAX_NATIVE_IMAGES - budget
 
 
 _TOOL_ERROR_PREFIX = (
@@ -723,6 +795,19 @@ async def chat_stream(
                     ):
                         yield ev
                     return
+
+            # Native vision: a vision-capable LOCAL model gets the shared images themselves (see
+            # _attach_images_natively). Cloud lanes and vision-less models keep the `[Image: …]` markers,
+            # which they read through describe_image as before. After the silent-hands branch on purpose:
+            # that dormant path keeps its original messages.
+            if not _is_cloud_model(resolved_model) and await _model_supports_vision(
+                client, host, resolved_model
+            ):
+                native_messages, n_images = _attach_images_natively(messages)
+                if n_images:
+                    vision_prompt = active_prompt + "\n\n---\n\n" + _NATIVE_VISION_NOTE
+                    full = [{"role": "system", "content": vision_prompt}] + native_messages
+                    print(f"[agent] native vision: {n_images} image(s) attached for {resolved_model}")
 
             for turn in range(config.max_turns):
                 payload = {
