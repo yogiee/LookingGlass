@@ -25,7 +25,13 @@ SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-k47OPDePNJN2Iyiu28Hz73RzNv/GHyryeSPWvG
 SUFEED_URL="https://raw.githubusercontent.com/yogiee/LookingGlass/main/appcast.xml"
 
 # Homebrew Python used to create the embedded venv (interpreter is copied via --copies).
-HOST_PYTHON="${HOST_PYTHON:-/opt/homebrew/bin/python3}"
+# Pinned to 3.14: Homebrew's bare `python3` moved to 3.15, which MLX (mlx-audio → the
+# QUALITY voice tiers) has no wheels for yet, so pip fails. Unpin once MLX ships 3.15.
+HOST_PYTHON="${HOST_PYTHON:-/opt/homebrew/bin/python3.14}"
+if [ ! -x "$HOST_PYTHON" ]; then
+    echo "ERROR: $HOST_PYTHON not found — brew install python@3.14, or set HOST_PYTHON." >&2
+    exit 1
+fi
 
 echo "=== Building $DISPLAY_NAME ($CONFIG) v$VERSION ==="
 
