@@ -113,6 +113,9 @@ struct VoiceTierSettings: View {
                         .font(.system(size: 10))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
+                    // Cancel keeps what's downloaded, so it's a pause as much as a stop.
+                    Button("Cancel") { run(tier) { await speech.cancelDownload(tier) } }
+                        .disabled(busy != nil)
                 } else if info.installed {
                     Label("Downloaded", systemImage: "checkmark.circle.fill")
                         .labelStyle(.titleAndIcon)
@@ -122,10 +125,20 @@ struct VoiceTierSettings: View {
                         .disabled(busy != nil)
                 } else {
                     if let error = info.download.error {
-                        Text(error).font(.system(size: 10)).foregroundStyle(.orange).lineLimit(1)
+                        Text(error)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                            .lineLimit(2)
+                            .help(error)
+                    } else if info.download.isResumable {
+                        Text(String(format: "Paused at %.0f%%", info.download.fraction * 100))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
                     }
-                    Button("Download") { run(tier) { await speech.download(tier) } }
-                        .disabled(busy != nil)
+                    Button(info.download.isResumable ? "Resume" : "Download") {
+                        run(tier) { await speech.download(tier) }
+                    }
+                    .disabled(busy != nil)
                 }
             } else {
                 Text("Voice engine not reachable")

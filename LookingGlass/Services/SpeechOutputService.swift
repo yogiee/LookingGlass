@@ -293,6 +293,13 @@ final class SpeechOutputService: ObservableObject {
         return error?.message
     }
 
+    /// Stop a tier's download. Downloading it again picks up where this left off.
+    func cancelDownload(_ tier: VoiceTier) async -> String? {
+        let error = await client.cancelDownload(tier)
+        await refresh(resolve: false)
+        return error?.message
+    }
+
     func delete(_ tier: VoiceTier) async -> String? {
         if (speakingBackend as? NeuralSpeechBackend)?.tier == tier { stop() }
         if tier == .light {

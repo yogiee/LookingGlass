@@ -36,6 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 
+from . import download as DL
 from . import tiers as T
 from .text import chunk, language_for
 
@@ -63,10 +64,11 @@ class _Job:
 
 @dataclass
 class _Download:
-    state: str = "idle"          # idle | running | done | error
+    state: str = "idle"          # idle | running | done | error | cancelled
     done_bytes: int = 0
     total_bytes: int = 0
     error: str | None = None
+    cancel: threading.Event = field(default_factory=threading.Event)
 
 
 class VoiceService:
@@ -294,8 +296,7 @@ class VoiceService:
         d = self._downloads.get(tier_id)
         if d is None:
             return {"state": "idle", "done_bytes": 0, "total_bytes": 0, "error": None}
-        if d.state == "running":
-            d.done_bytes = _dir_bytes(T.tier(tier_id).path)
+        # The downloader counts bytes itself (partial files included), so this is cheap and exact.
         return {"state": d.state, "done_bytes": min(d.done_bytes, d.total_bytes or d.done_bytes),
                 "total_bytes": d.total_bytes, "error": d.error}
 
@@ -308,26 +309,46 @@ class VoiceService:
             self._downloads[tier_id] = _Download(state="done", done_bytes=tier.download_bytes,
                                                  total_bytes=tier.download_bytes)
             return self._download_status(tier_id)
+        # A fresh _Download (new cancel event) every time: a cancelled or failed run resumes from its
+        # partial files rather than starting over.
         d = _Download(state="running", total_bytes=tier.download_bytes)
         self._downloads[tier_id] = d
         threading.Thread(target=self._download_sync, args=(tier, d), daemon=True,
                          name=f"tts-download-{tier_id}").start()
         return self._download_status(tier_id)
 
+    def cancel_download(self, tier_id: str) -> dict:
+        T.tier(tier_id)                       # validate the id
+        d = self._downloads.get(tier_id)
+        if d is not None and d.state == "running":
+            d.cancel.set()                    # the worker stops within a chunk and marks it cancelled
+        return self._download_status(tier_id)
+
     def _download_sync(self, tier: T.Tier, d: _Download) -> None:
         try:
-            from huggingface_hub import snapshot_download
-
             tier.path.mkdir(parents=True, exist_ok=True)
-            snapshot_download(repo_id=tier.repo, revision=tier.revision, local_dir=str(tier.path),
-                              allow_patterns=list(tier.allow_patterns) if tier.allow_patterns else None)
+            # Left behind by the old huggingface_hub downloader; nothing reads it.
+            shutil.rmtree(tier.path / ".cache", ignore_errors=True)
+            files = DL.list_files(tier.repo, tier.revision, tier.allow_patterns)
+            d.total_bytes = sum(size for _, size in files) or tier.download_bytes
+            d.done_bytes = DL.bytes_on_disk(tier.path, files)
+
+            def on_bytes(n: int) -> None:
+                d.done_bytes += n
+
+            DL.fetch(tier.repo, tier.revision, files, tier.path, d.cancel, on_bytes)
             missing = [f for f in tier.required if not (tier.path / f).exists()]
             if missing:
                 raise RuntimeError(f"download finished but {', '.join(missing)} is missing")
             (tier.path / T.COMPLETE_MARKER).write_text(json.dumps(
                 {"repo": tier.repo, "revision": tier.revision, "completed": time.time()}))
-            d.done_bytes = tier.download_bytes
+            d.done_bytes = d.total_bytes
             d.state = "done"
+        except DL.Cancelled:
+            d.state = "cancelled"
+        except DL.DownloadError as e:
+            d.state = "error"
+            d.error = str(e)
         except Exception as e:
             d.state = "error"
             d.error = f"{type(e).__name__}: {e}"
@@ -347,13 +368,6 @@ class VoiceService:
             self._downloads.pop(tier_id, None)
             return True
         return False
-
-
-def _dir_bytes(path) -> int:
-    try:
-        return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
-    except FileNotFoundError:
-        return 0
 
 
 voice = VoiceService()

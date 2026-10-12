@@ -12,7 +12,7 @@ struct NeuralVoiceStatus: Decodable, Equatable, Sendable {
     }
 
     struct Download: Decodable, Equatable, Sendable {
-        let state: String            // idle | running | done | error
+        let state: String            // idle | running | done | error | cancelled
         let doneBytes: Int
         let totalBytes: Int
         let error: String?
@@ -24,6 +24,8 @@ struct NeuralVoiceStatus: Decodable, Equatable, Sendable {
         }
 
         var isRunning: Bool { state == "running" }
+        /// Stopped part-way (cancelled, or failed) with bytes on disk: downloading again resumes.
+        var isResumable: Bool { (state == "cancelled" || state == "error") && doneBytes > 0 }
         var fraction: Double { totalBytes > 0 ? min(1, Double(doneBytes) / Double(totalBytes)) : 0 }
     }
 
@@ -106,6 +108,12 @@ struct NeuralVoiceClient: Sendable {
     @discardableResult
     func startDownload(_ tier: VoiceTier) async -> NeuralVoiceError? {
         await post("/tts/download", ["tier": tier.modelID ?? ""])
+    }
+
+    /// Stop a running download. Its partial files stay, so the next `startDownload` resumes.
+    @discardableResult
+    func cancelDownload(_ tier: VoiceTier) async -> NeuralVoiceError? {
+        await post("/tts/download/cancel", ["tier": tier.modelID ?? ""])
     }
 
     @discardableResult

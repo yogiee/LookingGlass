@@ -4,7 +4,8 @@
   POST   /tts/prepare  {tier}     load + warm a tier so the first sentence doesn't pay for it
   POST   /tts/unload              release the model now (image generation calls this first)
   POST   /tts/speak    {text,tier}  -> audio/L16 stream: little-endian int16, mono, 24 kHz
-  POST   /tts/download {tier}     start fetching a tier's pinned snapshot (poll /tts/status)
+  POST   /tts/download {tier}     start (or resume) fetching a tier's pinned snapshot (poll /tts/status)
+  POST   /tts/download/cancel {tier}  stop a running download; partial files are kept for resume
   DELETE /tts/models/{tier}       remove a downloaded tier
 
 `/tts/speak` takes text that the app has ALREADY reduced to the spoken layer. It carries no rate: Qwen
@@ -85,6 +86,14 @@ async def speak(req: SpeakRequest):
 async def download(req: TierRequest):
     try:
         return voice.start_download(req.tier)
+    except Exception as e:
+        return _error(e)
+
+
+@router.post("/download/cancel")
+async def cancel_download(req: TierRequest):
+    try:
+        return voice.cancel_download(req.tier)
     except Exception as e:
         return _error(e)
 
