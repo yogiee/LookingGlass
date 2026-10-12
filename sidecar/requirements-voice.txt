@@ -1,0 +1,35 @@
+# The voice runtime for the QUALITY / QUALITY+ tiers (Qwen3-TTS on MLX), installed on demand into
+# ~/Library/Application Support/LookingGlass/runtimes/ — NOT into the app bundle (decision_lean_bundle_ondemand_aux:
+# it is ~540 MB, and every app update would otherwise re-ship it). See sidecar/tts/runtime.py.
+#
+# Exact pins, installed with --no-deps: these are ONLY the packages the base sidecar (requirements.txt) doesn't
+# already have. Shared dependencies come from the base venv, so the two never disagree on versions.
+#
+# Regenerate after changing mlx-audio's pin: build a venv from requirements.txt, another from requirements.txt +
+# the new mlx-audio, and list the packages (with versions) that only the second one has.
+filelock==4.1.1
+fsspec==2026.9.0
+hf-xet==1.7.0
+httpcore2==2.13.1
+httpx2==2.13.1
+huggingface_hub==2.2.0
+markdown-it-py==4.2.0
+mdurl==0.1.2
+miniaudio==1.71
+mlx-audio==0.5.4
+mlx-metal==0.32.3
+mlx==0.32.3
+numpy==2.5.4
+packaging==26.3
+Pygments==2.21.0
+regex==2026.9.29
+rich==15.0.0
+safetensors==0.8.0
+scipy==1.18.1
+shellingham==1.5.4
+sounddevice==0.5.6
+tokenizers==0.23.3
+tqdm==4.70.1
+transformers==5.19.0
+truststore==0.10.4
+typer==0.27.3

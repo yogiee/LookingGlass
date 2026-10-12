@@ -6,4 +6,5 @@ sse-starlette>=1.8.0
 pydantic>=2.0.0
 ddgs>=6.0.0
 pypdf>=4.0.0
-mlx-audio==0.5.4     # Qwen3-TTS voice (QUALITY / QUALITY+ tiers). Pinned: TTS behaviour is version-sensitive (speed= no-op, ICL drops instruct)
+# The voice runtime (mlx-audio for the QUALITY tiers) is NOT bundled: it installs on demand from
+# requirements-voice.txt — see tts/runtime.py.

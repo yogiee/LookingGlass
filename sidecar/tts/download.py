@@ -76,17 +76,43 @@ def bytes_on_disk(dest: Path, files: list[tuple[str, int]]) -> int:
 
 def fetch(repo: str, revision: str, files: list[tuple[str, int]], dest: Path,
           cancel: threading.Event, on_bytes: Callable[[int], None]) -> None:
-    """Download every file into `dest`, reporting each chunk through `on_bytes`."""
+    """Download a pinned Hugging Face snapshot's files into `dest`, reporting each chunk through `on_bytes`."""
+    fetch_urls([(f"{HF}/{repo}/resolve/{revision}/{path}", dest / path, size) for path, size in files],
+               cancel, on_bytes)
+
+
+def fetch_urls(items: list[tuple[str, Path, int]], cancel: threading.Event,
+               on_bytes: Callable[[int], None]) -> None:
+    """Download (url, destination, size) items, skipping any already complete."""
     timeout = httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT)
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        for path, size in files:
-            final = dest / path
+        for url, final, size in items:
             if final.exists() and final.stat().st_size == size:
                 continue
             final.parent.mkdir(parents=True, exist_ok=True)
             part = final.with_name(final.name + PART_SUFFIX)
-            _fetch_one(client, f"{HF}/{repo}/resolve/{revision}/{path}", part, size, cancel, on_bytes)
+            _fetch_one(client, url, part, size, cancel, on_bytes)
             os.replace(part, final)
+
+
+def bytes_on_disk_items(items: list[tuple[str, Path, int]]) -> int:
+    """`bytes_on_disk` for (url, destination, size) items."""
+    total = 0
+    for _, final, size in items:
+        part = final.with_name(final.name + PART_SUFFIX)
+        if final.exists() and final.stat().st_size == size:
+            total += size
+        elif part.exists():
+            total += min(part.stat().st_size, size)
+    return total
+
+
+def content_length(url: str) -> int:
+    """Size of a remote file, from a HEAD request (redirects followed)."""
+    with httpx.Client(timeout=httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT), follow_redirects=True) as c:
+        r = c.head(url)
+        r.raise_for_status()
+        return int(r.headers.get("content-length", 0))
 
 
 def _fetch_one(client: httpx.Client, url: str, part: Path, size: int,

@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import Foundation
 import Metal
 
@@ -293,6 +294,30 @@ final class SpeechOutputService: ObservableObject {
         return error?.message
     }
 
+    // MARK: - Voice engine
+
+    /// Install (or update) the voice engine the QUALITY tiers run on. Progress arrives through `neuralStatus`.
+    func downloadEngine() async -> String? {
+        let error = await client.startEngineDownload()
+        await refresh(resolve: false)
+        pollWhileDownloading()
+        return error?.message
+    }
+
+    func cancelEngineDownload() async -> String? {
+        let error = await client.cancelEngineDownload()
+        await refresh(resolve: false)
+        return error?.message
+    }
+
+    func removeEngine() async -> String? {
+        if speakingBackend is NeuralSpeechBackend { stop() }
+        if neuralStatus?.loadedTier != nil { await client.unload() }
+        let error = await client.removeEngine()
+        await refresh()
+        return error?.message
+    }
+
     /// Stop a tier's download. Downloading it again picks up where this left off.
     func cancelDownload(_ tier: VoiceTier) async -> String? {
         let error = await client.cancelDownload(tier)
@@ -320,7 +345,8 @@ final class SpeechOutputService: ObservableObject {
             while let self, !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 await self.refresh(resolve: false)
-                let running = self.neuralStatus?.tiers.values.contains { $0.download.isRunning } ?? false
+                let running = (self.neuralStatus?.tiers.values.contains { $0.download.isActive } ?? false)
+                    || self.neuralStatus?.engine?.download.isActive == true
                 if !running {
                     await self.resolveAuto()          // a finished download can change AUTO's answer
                     self.optimizeLightIfNeeded(force: true)
@@ -357,6 +383,39 @@ final class SpeechOutputService: ObservableObject {
     static var voiceDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LookingGlass/voice", isDirectory: true)
+    }
+
+    /// Alice's own voice: the reference clip her QUALITY voice was tuned on (Take 3), and its transcript,
+    /// hosted as assets of the project's `voice-v1` GitHub release. Pinned by checksum, so a changed or
+    /// corrupted file is refused rather than cloned.
+    static let aliceClipBaseURL = URL(string: "https://github.com/yogiee/LookingGlass/releases/download/voice-v1/")!
+    static let aliceClipChecksums = [
+        "alice_reference.wav": "771ac8715c86f2d20ab820a4a0781addfa482e8e438d44dc3659fc2b16acb6d5",
+        "alice_reference.txt": "27669eef1c07c6106884f6b5bb965c5b6ec12ecb64f0a1086d0e03614313e4c0",
+    ]
+
+    /// Download Alice's clip and install it exactly as a chosen clip would be. Returns an error, or nil.
+    func downloadAliceClip() async -> String? {
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lg-alice-voice-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        do {
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            for (name, expected) in Self.aliceClipChecksums {
+                let (data, response) = try await URLSession.shared.data(from: Self.aliceClipBaseURL.appending(path: name))
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    return "Couldn't download Alice's voice (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))."
+                }
+                let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                guard digest == expected else {
+                    return "The downloaded voice clip didn't match its checksum, so it wasn't installed."
+                }
+                try data.write(to: staging.appendingPathComponent(name))
+            }
+        } catch {
+            return "Couldn't download Alice's voice: \(error.localizedDescription)"
+        }
+        return await importVoiceClip(from: staging.appendingPathComponent("alice_reference.wav"))
     }
 
     /// Install a reference clip and its transcript as Alice's voice.

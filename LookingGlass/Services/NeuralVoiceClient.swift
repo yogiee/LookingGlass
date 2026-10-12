@@ -12,18 +12,23 @@ struct NeuralVoiceStatus: Decodable, Equatable, Sendable {
     }
 
     struct Download: Decodable, Equatable, Sendable {
-        let state: String            // idle | running | done | error | cancelled
+        let state: String            // idle | waiting (on the voice engine) | running | done | error | cancelled
+        let phase: String?           // the engine's install step: resolving | downloading | installing
         let doneBytes: Int
         let totalBytes: Int
         let error: String?
 
         enum CodingKeys: String, CodingKey {
-            case state, error
+            case state, error, phase
             case doneBytes = "done_bytes"
             case totalBytes = "total_bytes"
         }
 
         var isRunning: Bool { state == "running" }
+        /// A QUALITY download held until the voice engine it needs has installed.
+        var isWaiting: Bool { state == "waiting" }
+        /// Running or waiting: something is still in flight, so keep polling.
+        var isActive: Bool { isRunning || isWaiting }
         /// Stopped part-way (cancelled, or failed) with bytes on disk: downloading again resumes.
         var isResumable: Bool { (state == "cancelled" || state == "error") && doneBytes > 0 }
         var fraction: Double { totalBytes > 0 ? min(1, Double(doneBytes) / Double(totalBytes)) : 0 }
@@ -46,8 +51,25 @@ struct NeuralVoiceStatus: Decodable, Equatable, Sendable {
         }
     }
 
+    /// The voice engine (mlx-audio + friends) the QUALITY tiers run on — a download, not part of the app.
+    struct Engine: Decodable, Equatable, Sendable {
+        let builtin: Bool            // a dev build with mlx-audio in the bundle: nothing to download
+        let installed: Bool
+        let outdated: Bool           // installed for an older app; QUALITY needs the update
+        let downloadBytes: Int
+        let installedBytes: Int
+        let download: Download
+
+        enum CodingKeys: String, CodingKey {
+            case builtin, installed, outdated, download
+            case downloadBytes = "download_bytes"
+            case installedBytes = "installed_bytes"
+        }
+    }
+
     let available: Bool
     let unavailableReason: String?
+    let engine: Engine?
     let reference: Reference
     let loadedTier: String?
     let residentGB: Double
@@ -55,7 +77,7 @@ struct NeuralVoiceStatus: Decodable, Equatable, Sendable {
     let tiers: [String: Tier]
 
     enum CodingKeys: String, CodingKey {
-        case available, reference, tiers
+        case available, reference, tiers, engine
         case unavailableReason = "unavailable_reason"
         case loadedTier = "loaded_tier"
         case residentGB = "resident_gb"
@@ -108,6 +130,26 @@ struct NeuralVoiceClient: Sendable {
     @discardableResult
     func startDownload(_ tier: VoiceTier) async -> NeuralVoiceError? {
         await post("/tts/download", ["tier": tier.modelID ?? ""])
+    }
+
+    /// The voice engine shares the tiers' download routes under the id "engine".
+    static let engineID = "engine"
+
+    @discardableResult
+    func startEngineDownload() async -> NeuralVoiceError? {
+        await post("/tts/download", ["tier": Self.engineID])
+    }
+
+    @discardableResult
+    func cancelEngineDownload() async -> NeuralVoiceError? {
+        await post("/tts/download/cancel", ["tier": Self.engineID])
+    }
+
+    @discardableResult
+    func removeEngine() async -> NeuralVoiceError? {
+        var request = URLRequest(url: baseURL.appending(path: "/tts/models/\(Self.engineID)"))
+        request.httpMethod = "DELETE"
+        return await send(request)
     }
 
     /// Stop a running download. Its partial files stay, so the next `startDownload` resumes.

@@ -29,6 +29,7 @@ import asyncio
 import gc
 import json
 import shutil
+import sys
 import threading
 import time
 import wave
@@ -37,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import AsyncIterator
 
 from . import download as DL
+from . import runtime as RT
 from . import tiers as T
 from .text import chunk, language_for
 
@@ -64,7 +66,8 @@ class _Job:
 
 @dataclass
 class _Download:
-    state: str = "idle"          # idle | running | done | error | cancelled
+    state: str = "idle"          # idle | waiting (on the voice engine) | running | done | error | cancelled
+    phase: str | None = None     # the engine's install step: resolving | downloading | installing
     done_bytes: int = 0
     total_bytes: int = 0
     error: str | None = None
@@ -84,6 +87,11 @@ class VoiceService:
         self._downloads: dict[str, _Download] = {}
         self._import_error: str | None = None
         self._resident_gb = 0.0
+        # The voice engine (mlx-audio + friends) is a download, not part of the bundle — see runtime.py.
+        self._engine_dl = _Download()
+        self._engine_lock = threading.Lock()
+        self._engine_removed = False      # removed while its modules were loaded: unusable until restart
+        RT.activate()
 
     # ------------------------------------------------------------------ status
 
@@ -91,6 +99,11 @@ class VoiceService:
         """Whether MLX + mlx-audio are installed. Checked with find_spec, NOT import: importing mlx_audio
         pulls in transformers (~2 s), and this runs on the event loop — a real import here would stall a
         concurrent /chat stream. The real import happens on the MLX thread at load time."""
+        if self._engine_removed:
+            return False, "The voice engine was removed. Quit and reopen Looking Glass to finish."
+        if not RT.ready():
+            what = "needs an update" if RT.outdated() else "isn't installed"
+            return False, f"The voice engine for QUALITY and QUALITY+ {what} — download it in Settings → Voice."
         if self._import_error is None:
             from importlib.util import find_spec
             missing = [m for m in ("mlx", "mlx_audio") if find_spec(m) is None]
@@ -107,6 +120,7 @@ class VoiceService:
                 "audio": str(T.REFERENCE_AUDIO),
                 "text": str(T.REFERENCE_TEXT),
             },
+            "engine": {**RT.status(), "label": "Voice engine", "download": self._download_status(ENGINE_ID)},
             "loaded_tier": self._loaded_tier,
             "resident_gb": round(self._resident_gb, 2),
             "sample_rate": SAMPLE_RATE,
@@ -293,17 +307,19 @@ class VoiceService:
     # ------------------------------------------------------------------ downloads
 
     def _download_status(self, tier_id: str) -> dict:
-        d = self._downloads.get(tier_id)
+        d = self._engine_dl if tier_id == ENGINE_ID else self._downloads.get(tier_id)
         if d is None:
-            return {"state": "idle", "done_bytes": 0, "total_bytes": 0, "error": None}
+            return {"state": "idle", "phase": None, "done_bytes": 0, "total_bytes": 0, "error": None}
         # The downloader counts bytes itself (partial files included), so this is cheap and exact.
-        return {"state": d.state, "done_bytes": min(d.done_bytes, d.total_bytes or d.done_bytes),
+        return {"state": d.state, "phase": d.phase, "done_bytes": min(d.done_bytes, d.total_bytes or d.done_bytes),
                 "total_bytes": d.total_bytes, "error": d.error}
 
     def start_download(self, tier_id: str) -> dict:
+        if tier_id == ENGINE_ID:
+            return self._start_engine()
         tier = T.tier(tier_id)
         current = self._downloads.get(tier_id)
-        if current is not None and current.state == "running":
+        if current is not None and current.state in ("running", "waiting"):
             return self._download_status(tier_id)
         if tier.is_installed():
             self._downloads[tier_id] = _Download(state="done", done_bytes=tier.download_bytes,
@@ -311,21 +327,87 @@ class VoiceService:
             return self._download_status(tier_id)
         # A fresh _Download (new cancel event) every time: a cancelled or failed run resumes from its
         # partial files rather than starting over.
-        d = _Download(state="running", total_bytes=tier.download_bytes)
+        # A QUALITY tier can't speak without the voice engine, so its download brings the engine first.
+        needs_engine = tier.engine == "mlx" and not RT.ready()
+        d = _Download(state="waiting" if needs_engine else "running", total_bytes=tier.download_bytes)
         self._downloads[tier_id] = d
-        threading.Thread(target=self._download_sync, args=(tier, d), daemon=True,
+        threading.Thread(target=self._download_sync, args=(tier, d, needs_engine), daemon=True,
                          name=f"tts-download-{tier_id}").start()
         return self._download_status(tier_id)
 
     def cancel_download(self, tier_id: str) -> dict:
+        if tier_id == ENGINE_ID:
+            if self._engine_dl.state == "running":
+                self._engine_dl.cancel.set()
+            return self._download_status(ENGINE_ID)
         T.tier(tier_id)                       # validate the id
         d = self._downloads.get(tier_id)
-        if d is not None and d.state == "running":
+        if d is not None and d.state in ("running", "waiting"):
             d.cancel.set()                    # the worker stops within a chunk and marks it cancelled
+            if d.state == "waiting" and self._engine_dl.state == "running":
+                self._engine_dl.cancel.set()  # it's waiting on the engine: stop that too
         return self._download_status(tier_id)
 
-    def _download_sync(self, tier: T.Tier, d: _Download) -> None:
+    # ------------------------------------------------------------------ voice engine
+
+    def _start_engine(self) -> dict:
+        if RT.ready():
+            self._engine_dl = _Download(state="done")
+        elif self._engine_dl.state != "running":
+            d = _Download(state="running", total_bytes=RT.DOWNLOAD_ESTIMATE)
+            self._engine_dl = d
+            threading.Thread(target=self._engine_sync, args=(d,), daemon=True, name="tts-engine").start()
+        return self._download_status(ENGINE_ID)
+
+    def _engine_sync(self, d: _Download) -> None:
+        with self._engine_lock:
+            if RT.ready():
+                d.state = "done"
+                return
+            try:
+                def on_total(total: int, already: int) -> None:
+                    d.total_bytes, d.done_bytes = total, already
+
+                def on_bytes(n: int) -> None:
+                    d.done_bytes += n
+
+                def on_phase(phase: str) -> None:
+                    d.phase = phase
+
+                RT.install(d.cancel, on_total, on_bytes, on_phase)
+                d.done_bytes = d.total_bytes
+                d.state = "done"
+            except DL.Cancelled:
+                d.state = "cancelled"
+            except DL.DownloadError as e:
+                d.state, d.error = "error", str(e)
+            except Exception as e:
+                d.state, d.error = "error", f"{type(e).__name__}: {e}"
+            finally:
+                d.phase = None
+                self._import_error = None     # re-check availability against the new sys.path
+
+    def _await_engine(self, d: _Download) -> None:
+        """Install the engine for a waiting tier download (or wait for an install already running)."""
+        engine = self._engine_dl
+        if engine.state == "running":
+            while engine.state == "running":
+                if d.cancel.wait(0.5):
+                    engine.cancel.set()
+        else:
+            engine = _Download(state="running", total_bytes=RT.DOWNLOAD_ESTIMATE)
+            self._engine_dl = engine
+            self._engine_sync(engine)
+        if engine.state == "cancelled" or d.cancel.is_set():
+            raise DL.Cancelled()
+        if not RT.ready():
+            raise DL.DownloadError(engine.error or "The voice engine didn't install.")
+
+    def _download_sync(self, tier: T.Tier, d: _Download, needs_engine: bool = False) -> None:
         try:
+            if needs_engine:
+                self._await_engine(d)
+                d.state = "running"
             tier.path.mkdir(parents=True, exist_ok=True)
             # Left behind by the old huggingface_hub downloader; nothing reads it.
             shutil.rmtree(tier.path / ".cache", ignore_errors=True)
@@ -354,6 +436,8 @@ class VoiceService:
             d.error = f"{type(e).__name__}: {e}"
 
     def delete(self, tier_id: str) -> bool:
+        if tier_id == ENGINE_ID:
+            return self._remove_engine()
         tier = T.tier(tier_id)
         if self._loaded_tier == tier_id:
             raise VoiceError("in_use", f"{tier.label} is loaded — unload it first.")
@@ -369,5 +453,21 @@ class VoiceService:
             return True
         return False
 
+    def _remove_engine(self) -> bool:
+        if RT.BUILTIN:
+            raise VoiceError("builtin", "This build has the voice engine built in; there's nothing to remove.")
+        if self._loaded_tier is not None:
+            raise VoiceError("in_use", "A voice is loaded — stop it before removing the engine.")
+        if self._engine_dl.state == "running" or any(d.state in ("running", "waiting") for d in self._downloads.values()):
+            raise VoiceError("downloading", "A voice download is in progress.")
+        was_imported = "mlx_audio" in sys.modules
+        RT.remove()
+        self._engine_dl = _Download()
+        self._import_error = None
+        # Already-imported modules stay in memory; using them with their files gone would fail oddly.
+        self._engine_removed = was_imported
+        return True
 
+
+ENGINE_ID = "engine"
 voice = VoiceService()

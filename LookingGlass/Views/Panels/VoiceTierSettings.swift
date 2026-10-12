@@ -17,6 +17,8 @@ struct VoiceTierSettings: View {
     @State private var message: String?
     @State private var busy: VoiceTier?
     @State private var showingClipImporter = false
+    @State private var engineBusy = false
+    @State private var clipBusy = false
 
     private var selected: VoiceTier { VoiceTier(rawValue: tierRaw) ?? .auto }
 
@@ -34,6 +36,10 @@ struct VoiceTierSettings: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
 
+        // The engine QUALITY runs on is its own download; a dev build carries it and hides the row.
+        if let engine = speech.neuralStatus?.engine, !engine.builtin {
+            engineRow(engine)
+        }
         ForEach([VoiceTier.light, .quality, .qualityPlus]) { tier in
             modelRow(tier)
         }
@@ -106,7 +112,13 @@ struct VoiceTierSettings: View {
             }
             Spacer()
             if let info {
-                if info.download.isRunning {
+                if info.download.isWaiting {
+                    Text("Waiting for the voice engine…")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Button("Cancel") { run(tier) { await speech.cancelDownload(tier) } }
+                        .disabled(busy != nil)
+                } else if info.download.isRunning {
                     ProgressView(value: info.download.fraction)
                         .frame(width: 110)
                     Text(String(format: "%.0f%%", info.download.fraction * 100))
@@ -145,6 +157,73 @@ struct VoiceTierSettings: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    // MARK: - Voice engine
+
+    private func engineRow(_ engine: NeuralVoiceStatus.Engine) -> some View {
+        let download = engine.download
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Voice engine")
+                Text(String(format: "Needed by QUALITY and QUALITY+ · %.0f MB download · %.0f MB on disk",
+                            Double(engine.downloadBytes) / 1e6, Double(engine.installedBytes) / 1e6))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                if download.isRunning, let phase = download.phase, phase != "downloading" {
+                    Text(phase == "resolving" ? "Looking up packages…" : "Installing — under a minute…")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if download.isRunning {
+                ProgressView(value: download.fraction)
+                    .frame(width: 110)
+                Text(String(format: "%.0f%%", download.fraction * 100))
+                    .font(.system(size: 10))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+                Button("Cancel") { runEngine { await speech.cancelEngineDownload() } }
+                    .disabled(engineBusy)
+            } else if engine.installed {
+                Label("Installed", systemImage: "checkmark.circle.fill")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Button("Remove") { runEngine { await speech.removeEngine() } }
+                    .disabled(engineBusy)
+            } else {
+                if let error = download.error {
+                    Text(error)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                        .help(error)
+                } else if download.isResumable {
+                    Text(String(format: "Paused at %.0f%%", download.fraction * 100))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                } else if engine.outdated {
+                    Text("This version of the app needs an update to it.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                }
+                Button(engine.outdated ? "Update" : download.isResumable ? "Resume" : "Download") {
+                    runEngine { await speech.downloadEngine() }
+                }
+                .disabled(engineBusy)
+            }
+        }
+    }
+
+    private func runEngine(_ action: @escaping () async -> String?) {
+        engineBusy = true
+        message = nil
+        Task {
+            message = await action()
+            engineBusy = false
         }
     }
 
@@ -221,10 +300,22 @@ struct VoiceTierSettings: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.orange)
                 }
+                Button(present ? "Use Alice's voice" : "Download Alice's voice") {
+                    clipBusy = true
+                    message = nil
+                    Task {
+                        message = await speech.downloadAliceClip()
+                        clipBusy = false
+                    }
+                }
+                .disabled(clipBusy)
+                .help("Alice's own reference clip (under 1 MB), from the Looking Glass releases on GitHub.")
                 Button(present ? "Replace…" : "Choose…") { showingClipImporter = true }
+                    .disabled(clipBusy)
             }
-            Text("QUALITY and QUALITY+ clone this clip. A 24 kHz mono WAV, with its exact transcript beside it "
-                 + "as a .txt of the same name — the two must match word for word.")
+            Text("QUALITY and QUALITY+ clone this clip. Download Alice's own voice, or choose your own: a 24 kHz "
+                 + "mono WAV, with its exact transcript beside it as a .txt of the same name — the two must match "
+                 + "word for word.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
