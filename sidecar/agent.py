@@ -22,10 +22,12 @@ from router import classify_mode, detect_image_request
 from skill_loader import skills_index
 from tools.context import (
     ollama_host as _ctx_ollama_host,
+    reset_chat_model,
     reset_ollama_host,
     reset_project_dir,
     reset_working_dir,
     output_subdir,
+    set_chat_model,
     set_ollama_host,
     set_project_dir,
     set_working_dir,
@@ -178,6 +180,70 @@ def _sanitize_tool_args(tool, args: dict) -> dict:
     elif "model" in props and (args.get("model") in (None, "", "default")):
         args.pop("model", None)
     return args
+
+
+BUILTIN_IMAGE_TOOL = "generate_image"
+
+# The app sends past messages as text only, so it appends `[Generated image: <path>]` to Alice's messages for the
+# images her tools made (SidecarClient.historyContent). Left in place, she copies the pattern — writing a marker
+# with an invented path instead of calling the tool (seen 2026-10-13). So the markers are lifted out of her
+# messages here and listed in the system prompt, where she reads them but never sees herself write them.
+_GENERATED_MARKER = re.compile(r"\[Generated image:\s*([^\]]+)\]")
+_MAX_EARLIER_IMAGES = 6
+
+
+def _lift_generated_images(messages: list[dict]) -> tuple[list[dict], list[str]]:
+    """Strip `[Generated image: …]` markers from assistant messages; return the messages and the paths that
+    still exist, oldest first (the newest _MAX_EARLIER_IMAGES)."""
+    out: list[dict] = []
+    paths: list[str] = []
+    for m in messages:
+        content = m.get("content") or ""
+        if m.get("role") == "assistant" and "[Generated image:" in content:
+            paths += [p.strip() for p in _GENERATED_MARKER.findall(content)]
+            m = {**m, "content": _GENERATED_MARKER.sub("", content).strip()}
+        out.append(m)
+    seen: set[str] = set()
+    kept = [p for p in reversed(paths) if p not in seen and not seen.add(p) and Path(p).expanduser().is_file()]
+    return out, list(reversed(kept[:_MAX_EARLIER_IMAGES]))
+
+
+def _earlier_images_note(paths: list[str]) -> str:
+    listing = "\n".join(f"- {p}" for p in paths)
+    return (
+        "## Images in this conversation\n"
+        f"Images you made earlier with generate_image, newest last:\n{listing}\n\n"
+        "To change one, call generate_image with edit_image set to its path and describe the change. An image "
+        "only exists if the tool made it in THIS turn: never say you made or changed one without calling the tool, "
+        "and never write image markers or file paths yourself."
+    )
+
+_IMAGE_SHOWN_NOTE = (
+    "The image is now on the user's screen. Reply to them in plain prose — a sentence or two in your own "
+    "voice about what you made. No JSON, no file path, no tool syntax."
+)
+
+
+def _is_image_tool(tool) -> bool:
+    props = (tool.parameters or {}).get("properties", {})
+    return "output_dir" in props and "prompt" in props
+
+
+def _prefer_builtin_image_tool(registry: "ToolRegistry", enabled: list[str] | None) -> list[str] | None:
+    """One image tool per request: when the built-in Core AI generator is registered, every other image tool
+    (OllamaMCP's `local_image`, dead since Ollama removed image generation) is left out, so Alice can't pick a
+    broken one. A saved tool list that enabled an image tool but predates the built-in one gets the built-in
+    in its place — the user asked for image generation; this is now where it lives."""
+    if registry.get(BUILTIN_IMAGE_TOOL) is None:
+        return enabled
+    names = enabled if enabled is not None else registry.names()
+    others = [n for n in names if n != BUILTIN_IMAGE_TOOL and (t := registry.get(n)) is not None and _is_image_tool(t)]
+    if not others:
+        return enabled
+    kept = [n for n in names if n not in others]
+    if BUILTIN_IMAGE_TOOL not in kept:
+        kept.append(BUILTIN_IMAGE_TOOL)
+    return kept
 
 
 def _find_image_tool(registry: "ToolRegistry", enabled: list[str] | None) -> str | None:
@@ -723,11 +789,15 @@ async def chat_stream(
     guidelines = read_guidelines(project_dir)
     if guidelines:
         parts.append(guidelines)
+    messages, earlier_images = _lift_generated_images(messages)
+    if earlier_images:
+        parts.append(_earlier_images_note(earlier_images))
     active_prompt = "\n\n---\n\n".join(parts)
 
     wd_token = set_working_dir(work_path)
     pd_token = set_project_dir(Path(project_dir).expanduser() if project_dir else None)
     oh_token = set_ollama_host(host)
+    cm_token = set_chat_model(resolved_model)
 
     full: list[dict] = [{"role": "system", "content": active_prompt}] + messages
 
@@ -739,6 +809,7 @@ async def chat_stream(
         effective_tools: list[str] | None = [n for n in base if n != "use_skill"]
     else:
         effective_tools = enabled_tools
+    effective_tools = _prefer_builtin_image_tool(registry, effective_tools)
     tool_schemas = registry.ollama_schemas(effective_tools)
 
     total_in = 0
@@ -972,6 +1043,7 @@ async def chat_stream(
                         full.append({"role": "user", "content": "Now write your answer."})
 
                 # Execute each tool, streaming start/result, and feed results back.
+                image_shown = False
                 for i, tc in enumerate(tool_calls):
                     fn = tc.get("function", {})
                     name = fn.get("name", "")
@@ -1032,6 +1104,16 @@ async def chat_stream(
                         "content": history_result,
                         "tool_name": name,
                     })
+                    if result.get("success") and tool is not None and _is_image_tool(tool):
+                        image_shown = True
+
+                # After a successful image, gemma4 answers with a JSON echo of the call
+                # ({"action": "generate_image", "action_input": …}) instead of talking —
+                # reproduced straight against Ollama with every result/description wording
+                # tried (2026-10-13). One short note fixes it (3/3, in voice), the same move
+                # as the think/use_skill nudges above.
+                if image_shown:
+                    full.append({"role": "system", "content": _IMAGE_SHOWN_NOTE})
 
             # Hit the turn ceiling without the model settling.
             yield {
@@ -1044,7 +1126,8 @@ async def chat_stream(
         # different asyncio context than it started (client disconnect, early break),
         # resetting the contextvar token raises ValueError — harmless cleanup noise,
         # so don't let it propagate out of the generator's teardown.
-        for _reset, _tok in ((reset_working_dir, wd_token), (reset_project_dir, pd_token), (reset_ollama_host, oh_token)):
+        for _reset, _tok in ((reset_working_dir, wd_token), (reset_project_dir, pd_token),
+                             (reset_ollama_host, oh_token), (reset_chat_model, cm_token)):
             try:
                 _reset(_tok)
             except (ValueError, LookupError):

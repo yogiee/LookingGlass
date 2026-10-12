@@ -16,6 +16,7 @@ from tools.builtin.memory import save_memory_entry
 from tools.context import reset_project_dir, set_project_dir
 from tools.registry import ToolRegistry
 from tts.routes import router as tts_router
+from imagegen.routes import router as imagegen_router
 
 BASE_DIR = Path(__file__).parent
 
@@ -121,6 +122,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="LookingGlass Sidecar", lifespan=lifespan)
 
 app.include_router(tts_router)
+app.include_router(imagegen_router)
 
 app.add_middleware(
     CORSMiddleware,

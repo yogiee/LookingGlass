@@ -29,6 +29,18 @@ enum ImagePathScanner {
         }
     }
 
+    /// Images Alice's own tools produced in this message (generated or edited), existing on disk.
+    static func toolImagePaths(in message: Message) -> [String] {
+        var seen = Set<String>()
+        return message.toolCalls
+            .filter { $0.isComplete && $0.success }
+            .flatMap { matches(in: $0.result) }
+            .filter { path in
+                let resolved = (path as NSString).expandingTildeInPath
+                return FileManager.default.fileExists(atPath: resolved) && seen.insert(resolved).inserted
+            }
+    }
+
     static func stripMarkers(_ text: String) -> String {
         let cleaned = text.replacingOccurrences(
             of: #"\[Image:\s*[^\]]+\]"#,

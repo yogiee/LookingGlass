@@ -61,6 +61,22 @@ def list_files(repo: str, revision: str, allow_patterns: Iterable[str] | None) -
     return files
 
 
+def lfs_checksums(repo: str, revision: str) -> dict[str, str]:
+    """sha256 of every LFS file in the pinned revision (the large ones — model weights), keyed by path."""
+    url: str | None = f"{HF}/api/models/{repo}/tree/{revision}?recursive=true"
+    sums: dict[str, str] = {}
+    with httpx.Client(timeout=httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT),
+                      follow_redirects=True) as client:
+        while url:
+            r = client.get(url)
+            r.raise_for_status()
+            for entry in r.json():
+                if entry.get("type") == "file" and entry.get("lfs", {}).get("oid"):
+                    sums[entry["path"]] = entry["lfs"]["oid"]
+            url = r.links.get("next", {}).get("url")
+    return sums
+
+
 def bytes_on_disk(dest: Path, files: list[tuple[str, int]]) -> int:
     """What's already here: complete files plus partial ones."""
     total = 0

@@ -47,11 +47,17 @@ fi
 BUILT_BINARY="$BUILD_OUT/$APP_NAME"
 [ -f "$BUILT_BINARY" ] || { echo "ERROR: binary not found at $BUILT_BINARY"; exit 1; }
 
+# The image generator helper (ImageGenHelper/, FLUX.2 [klein] on Core AI). Always release: debug Swift makes its
+# per-step work needlessly slow, whatever the app's config.
+swift build -c release --product lg-imagegen --package-path "$PROJECT_DIR"
+HELPER_OUT="$PROJECT_DIR/.build/release"
+[ -f "$HELPER_OUT/lg-imagegen" ] || { echo "ERROR: lg-imagegen not found at $HELPER_OUT"; exit 1; }
+
 # ── 2. Bundle skeleton ───────────────────────────────────────────────────────
 echo "  [2/8] Creating app bundle..."
 APP="$BUILD_DIR/$APP_NAME.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks" "$APP/Contents/Helpers"
 
 # ── 3. Executable + Sparkle framework ────────────────────────────────────────
 echo "  [3/8] Copying executable + Sparkle.framework..."
@@ -64,6 +70,13 @@ if [ -d "$SPARKLE_FW" ]; then
 else
     echo "  WARNING: Sparkle.framework not found at $SPARKLE_FW"
 fi
+
+# The image generator, which the sidecar runs once per image (Contents/Resources/sidecar → ../../Helpers). Its
+# SwiftPM resource bundles sit beside it, where Bundle.module looks for them.
+cp "$HELPER_OUT/lg-imagegen" "$APP/Contents/Helpers/lg-imagegen"
+for b in "$HELPER_OUT"/swift-transformers_Hub.bundle "$HELPER_OUT"/swift-crypto_Crypto.bundle; do
+    [ -d "$b" ] && cp -R "$b" "$APP/Contents/Helpers/"
+done
 
 # SwiftPM resource bundle (avatars/backgrounds load from here via Bundle.module).
 RES_BUNDLE="$BUILD_OUT/${APP_NAME}_${APP_NAME}.bundle"
@@ -180,6 +193,8 @@ echo "  [7/8] Ad-hoc code signing..."
 find "$APP" -name '.DS_Store' -delete
 xattr -cr "$APP"
 codesign --force --sign - --timestamp=none "$APP/Contents/Frameworks/Sparkle.framework"
+# A loose executable isn't reached by --deep: sign the helper explicitly (as with the venv interpreters).
+codesign --force --sign - --timestamp=none "$APP/Contents/Helpers/lg-imagegen"
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep "$APP" || { echo "  ERROR: code signature invalid — app will crash on launch"; exit 1; }
 

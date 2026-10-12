@@ -52,6 +52,18 @@ class SidecarClient {
         self.baseURL = baseURL
     }
 
+    /// What the sidecar sees of a past message. History carries text only, not tool results, so an image Alice
+    /// made would otherwise vanish from her view of the chat — and "make it night" couldn't find it. Its path
+    /// rides along as `[Generated image: …]`: a different marker from a shared image's `[Image: …]`, so the
+    /// sidecar doesn't attach her own pictures back to the model on every turn.
+    static func historyContent(_ message: Message) -> String {
+        guard message.role == .assistant else { return message.content }
+        let images = ImagePathScanner.toolImagePaths(in: message)
+        guard !images.isEmpty else { return message.content }
+        let notes = images.map { "[Generated image: \($0)]" }.joined(separator: "\n")
+        return message.content.isEmpty ? notes : message.content + "\n\n" + notes
+    }
+
     func stream(
         messages: [Message],
         model: String?,
@@ -77,7 +89,7 @@ class SidecarClient {
                     request.timeoutInterval = 300
 
                     var body: [String: Any] = [
-                        "messages": messages.map { ["role": $0.role.rawValue, "content": $0.content] },
+                        "messages": messages.map { ["role": $0.role.rawValue, "content": Self.historyContent($0)] },
                         "ollama_host": ollamaHost,
                     ]
                     if let model { body["model"] = model }

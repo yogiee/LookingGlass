@@ -29,6 +29,25 @@ _project_dir: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
 )
 
 
+# The chat model answering this request (the resolved one, after routing). Tools that need GPU memory —
+# image generation — read it to know which model to unload first.
+_chat_model: contextvars.ContextVar[str | None] = contextvars.ContextVar("chat_model", default=None)
+
+
+def set_chat_model(name: str | None):
+    """Set the request's chat model; returns a token to reset() with."""
+    return _chat_model.set(name)
+
+
+def reset_chat_model(token) -> None:
+    _chat_model.reset(token)
+
+
+def chat_model() -> str | None:
+    """The model answering the active request, or None outside a chat request."""
+    return _chat_model.get()
+
+
 def set_working_dir(path: Path):
     """Set the request's working dir; returns a token to reset() with."""
     return _working_dir.set(path)

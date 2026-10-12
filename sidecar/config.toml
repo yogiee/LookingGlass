@@ -110,10 +110,9 @@ keep_alive = "5m"
 # ⚠ WHEN YOU CHANGE ANYTHING BELOW, also update ~/.config/ollama-consumers/lookingGlass.json —
 # BenchLLAMA reads it to decide which models it may drop from disk.
 default       = "gemma4:26b-mlx"   # voice + work in one tool-capable model. Grounds instead of inventing (unlike ZINI/ornith), good voice, environment-aware. Cost: 17.2GB resident while active + rare persona-slip. Ladder above.
-# Image generation does NOT free this memory today: nothing in the sidecar unloads the chat model for an image
-# (image gen is parked — Ollama removed x/imagegen). The planned Core AI path decides per image: keep this model
-# loaded when free RAM allows, otherwise evict the TTS voice first, then this model (keep_alive 0).
-# See WORKSPACE/coreai-image-generation-design.md §6.3.
+# Image generation (generate_image → the lg-imagegen helper, FLUX.2 [klein] on Core AI) checks headroom per
+# image: this model stays loaded when free RAM and the GPU budget allow, otherwise the TTS voice is evicted first,
+# then this model (keep_alive 0) — it reloads on Alice's next reply. See sidecar/imagegen/service.py.
 coding        = "gemma4:26b-mlx"   # one-big-model: same capable model does code (was 12b-mlx)
 research      = "gemma4:26b-mlx"   # one-big-model: same capable model does research (was 12b-mlx)
 # deep_research availability/privacy fallback chain (runtime uses the primary; the local tail is a

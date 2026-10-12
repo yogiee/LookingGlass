@@ -12,6 +12,9 @@ struct SettingsSystemTab: View {
     @ObservedObject private var speech = SpeechOutputService.shared
     @AppStorage("ocrPastedImages") private var ocrPastedImages = true
     @ObservedObject private var upscaler = SuperResolutionService.shared
+    @ObservedObject private var imageGen = ImageGenModelService.shared
+    @State private var imageGenMessage: String?
+    @State private var imageGenBusy = false
     @AppStorage("filesRoot") private var filesRoot = ""
 
     /// Where independent (non-project) chats save files when no custom path is set.
@@ -308,6 +311,77 @@ struct SettingsSystemTab: View {
                 }
             }
             .onAppear { upscaler.refresh() }   // macOS may have fetched the model since launch
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Image generation")
+                            .font(.system(size: 12, weight: .medium))
+                        Text(String(format: "Alice can create and edit images on this Mac with FLUX.2 [klein] 4B — about 25 seconds an image. To make room, her chat model may be paused while one is drawn; she picks up right after. %.1f GB download.", Double(imageGen.model?.downloadBytes ?? 4_279_000_000) / 1e9))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        if let model = imageGen.model {
+                            Text("\(model.license) · \(model.source)")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.tertiary)
+                                .textSelection(.enabled)
+                        }
+                        if imageGen.model?.download.isRunning == true, imageGen.model?.download.phase == "verifying" {
+                            Text("Verifying the download…")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    imageGenControl
+                }
+                if let message = imageGenMessage ?? imageGen.model?.download.error {
+                    Text(message).font(.system(size: 10)).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .task { await imageGen.refresh() }
+        }
+    }
+
+    @ViewBuilder private var imageGenControl: some View {
+        if let status = imageGen.status, !status.available {
+            Text(status.unavailableReason ?? "Not available").font(.system(size: 10)).foregroundStyle(.secondary)
+        } else if let model = imageGen.model {
+            let download = model.download
+            if download.isRunning {
+                HStack(spacing: 6) {
+                    ProgressView(value: download.fraction).frame(width: 90)
+                    Text("\(Int(download.fraction * 100))%").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                    Button("Cancel") { runImageGen { await imageGen.cancel() } }.disabled(imageGenBusy)
+                }
+            } else if model.installed {
+                HStack(spacing: 6) {
+                    Label("Ready", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 11)).foregroundStyle(.green)
+                    Button("Remove") { runImageGen { await imageGen.remove() } }
+                        .disabled(imageGenBusy || imageGen.status?.generating == true)
+                }
+            } else {
+                HStack(spacing: 6) {
+                    if download.isResumable {
+                        Text("Paused at \(Int(download.fraction * 100))%").font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Button(download.isResumable ? "Resume" : "Download") { runImageGen { await imageGen.download() } }
+                        .disabled(imageGenBusy)
+                }
+            }
+        } else {
+            Text("Sidecar not reachable").font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+    }
+
+    private func runImageGen(_ action: @escaping () async -> String?) {
+        imageGenBusy = true
+        imageGenMessage = nil
+        Task {
+            imageGenMessage = await action()
+            imageGenBusy = false
         }
     }
 
