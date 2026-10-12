@@ -3,6 +3,7 @@ import AppKit
 
 struct SettingsStyleTab: View {
     @AppStorage("colorSchemeRaw") private var colorSchemeRaw = AppColorScheme.system.rawValue
+    @AppStorage("windowBackdrop") private var windowBackdropRaw = WindowBackdrop.liquidGlass.rawValue
     @AppStorage("chatFontChoice") private var chatFontChoice = ChatFontChoice.system.rawValue
     @AppStorage("fontSize") private var fontSize = 14.0
     @AppStorage("lineHeight") private var lineHeight = 1.2
@@ -28,6 +29,19 @@ struct SettingsStyleTab: View {
                 }
             }
             .pickerStyle(.segmented)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Picker("Window Backdrop", selection: $windowBackdropRaw) {
+                    ForEach(WindowBackdrop.allCases, id: \.rawValue) { backdrop in
+                        Text(backdrop.rawValue).tag(backdrop.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Liquid Glass follows System Settings → Appearance (Clear / Tinted). Frosted is the classic blurred desktop.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 Picker("Chat Font", selection: $chatFontChoice) {

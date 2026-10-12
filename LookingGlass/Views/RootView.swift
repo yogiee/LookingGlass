@@ -29,6 +29,27 @@ struct VibrancyBackground: NSViewRepresentable {
     }
 }
 
+/// AppKit Liquid Glass behind the whole window. Stock glass follows System Settings →
+/// Appearance (Clear / Tinted) and Reduce Transparency on its own — the same reason
+/// IPMSGX's glass tracks those settings with no code of its own. A trial against the
+/// frosted backdrop (Settings → Style → Window Backdrop): Clear may prove too
+/// see-through behind long text.
+struct GlassBackdrop: NSViewRepresentable {
+    let colorScheme: ColorScheme?
+
+    func makeNSView(context: Context) -> NSGlassEffectView {
+        let view = NSGlassEffectView()
+        view.style = .regular
+        view.cornerRadius = 0          // the window's own corner mask does the rounding
+        view.contentView = NSView()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSGlassEffectView, context: Context) {
+        nsView.appearance = nsAppearance(for: colorScheme)
+    }
+}
+
 /// Transparent overlay that tells AppKit "don't drag the window from here."
 /// Place as .background() on any content area where text selection is needed.
 /// The invisible title-bar strip (fullSizeContentView + titlebarAppearsTransparent)
@@ -102,6 +123,8 @@ struct RootView: View {
     @AppStorage("fontSize")         private var fontSize         = 14.0
     @AppStorage("lineHeight")       private var lineHeight       = 1.2
     @AppStorage("ollamaHost")       private var ollamaHost       = "http://localhost:11434"
+    @AppStorage("windowBackdrop")   private var windowBackdropRaw = WindowBackdrop.liquidGlass.rawValue
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var sidebarVisible = true
 
     @StateObject private var systemMonitor = SystemMonitor()
@@ -122,11 +145,19 @@ struct RootView: View {
         preferredColorScheme ?? systemColorScheme
     }
 
-    // Glass is the only background: frosted desktop blur + a dark tint for readability.
     @ViewBuilder
     private var backgroundLayer: some View {
-        VibrancyBackground(colorScheme: preferredColorScheme)
-        Color.black.opacity(activeColorScheme == .dark ? 0.35 : 0.08)
+        switch WindowBackdrop(rawValue: windowBackdropRaw) ?? .liquidGlass {
+        case .liquidGlass:
+            GlassBackdrop(colorScheme: preferredColorScheme)
+        case .frosted:
+            // Frosted desktop blur + a dark tint for readability. No tint under Reduce
+            // Transparency: AppKit already makes the vibrancy view opaque there.
+            VibrancyBackground(colorScheme: preferredColorScheme)
+            if !reduceTransparency {
+                Color.black.opacity(activeColorScheme == .dark ? 0.35 : 0.08)
+            }
+        }
     }
 
     var body: some View {
@@ -149,11 +180,9 @@ struct RootView: View {
                     .environmentObject(modelCatalog)
                     .frame(width: 380)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    // Hairline border so the panel reads against the frosted backdrop
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
-                    )
+                    // System glass, not a material: it follows the Liquid Glass and
+                    // Reduce Transparency settings, and draws its own rim.
+                    .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
                     .padding(.top, ChromeInsets.top)
                     .padding(.bottom, ChromeInsets.bottom)
                     .transition(.move(edge: .leading).combined(with: .opacity))

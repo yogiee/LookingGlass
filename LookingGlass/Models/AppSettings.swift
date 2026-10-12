@@ -1,5 +1,14 @@
 import SwiftUI
 
+/// What fills the window behind the rail, sidebar and chat.
+enum WindowBackdrop: String, CaseIterable {
+    /// AppKit Liquid Glass (NSGlassEffectView): follows System Settings → Appearance
+    /// (Clear / Tinted) and Reduce Transparency.
+    case liquidGlass = "Liquid Glass"
+    /// The classic frosted desktop: an under-window vibrancy view plus a readability wash.
+    case frosted = "Frosted"
+}
+
 enum AppColorScheme: String, CaseIterable {
     case system = "System"
     case light  = "Light"

@@ -375,7 +375,7 @@ struct ChatView: View {
     // the bottom inset, and the tray / floating chips when they're showing.
     private var inputReserve: CGFloat {
         max(inputHeight, Self.composerRowHeight) + 10 + ChromeInsets.bottom + 8
-            + (trayOpen ? 40 : 0) + (showsFloatingChips ? 36 : 0)
+            + (trayOpen ? 40 : 0) + (showsFloatingChips || viewModel.isResearching ? 36 : 0)
     }
 
     /// Dim level for input-bar controls while a turn runs — everything except STOP
@@ -433,14 +433,7 @@ struct ChatView: View {
                 AliceEmptyState()
                     .transition(.opacity)
             }
-            // Research progress banner + input bar stacked so banner sits flush above
-            VStack(spacing: 0) {
-                if viewModel.isResearching, let status = viewModel.researchStatus {
-                    ResearchProgressBanner(status: status)
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
-                }
-                floatingInputBar
-            }
+            floatingInputBar
         }
         .animation(.easeInOut(duration: 0.4), value: viewModel.messages.isEmpty)
         .animation(.easeInOut(duration: 0.2), value: viewModel.isResearching)
@@ -929,9 +922,14 @@ struct ChatView: View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
             VStack(alignment: .leading, spacing: 8) {
-                // Settings hidden in the closed tray that change the next send. They
-                // float above the pill so the pill keeps its whole width for text.
-                if showsFloatingChips {
+                // A research run's progress takes the chips' spot while it runs.
+                if viewModel.isResearching, let status = viewModel.researchStatus {
+                    ResearchProgressBanner(status: status)
+                        .padding(.leading, 8)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                } else if showsFloatingChips {
+                    // Settings hidden in the closed tray that change the next send. They
+                    // float above the pill so the pill keeps its whole width for text.
                     floatingChips
                         .padding(.leading, 8)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))

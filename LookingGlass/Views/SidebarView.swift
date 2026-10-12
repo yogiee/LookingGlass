@@ -97,6 +97,7 @@ struct SidebarView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(.regularMaterial, ignoresSafeAreaEdges: .all)
+        // No material here: RootView puts the panel on system glass, which follows the
+        // Liquid Glass and Reduce Transparency settings (a material doesn't).
     }
 }
