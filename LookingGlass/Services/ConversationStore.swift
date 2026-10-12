@@ -52,7 +52,13 @@ final class ConversationStore: ObservableObject {
 
     /// The conversation open in the chat pane. nil = a fresh, unsaved chat (the
     /// row is created lazily on first send, scoped to `activeProjectID`).
-    @Published var activeConversationID: UUID?
+    @Published var activeConversationID: UUID? {
+        didSet { if activeConversationID != oldValue { refreshActiveInfo() } }
+    }
+
+    /// Title, summary and project of the open conversation, for the chat pane's top
+    /// pill. nil when no saved conversation is open.
+    @Published private(set) var activeInfo: ActiveConversationInfo?
 
     /// Sidebar search. Root view searches everything (independent chats, plus
     /// projects by name or contained-chat match); project view scopes to that
@@ -214,6 +220,31 @@ final class ConversationStore: ObservableObject {
         reload()
     }
 
+    /// The stored one-line summary and the message count it was written at, so the
+    /// caller can tell whether the chat has moved on enough to warrant a fresh one.
+    func summaryState(_ conversationID: UUID) -> (summary: String?, messageCount: Int) {
+        let row = try? dbQueue.read { db in
+            try Row.fetchOne(db, sql: "SELECT summary, summary_msg_count FROM conversations WHERE id = ?",
+                             arguments: [conversationID.uuidString])
+        }
+        guard let row else { return (nil, 0) }
+        return (row["summary"], row["summary_msg_count"] ?? 0)
+    }
+
+    /// Store a fresh summary. Does not touch updated_at — a summary isn't activity,
+    /// so it shouldn't reorder the sidebar.
+    func setSummary(_ summary: String, messageCount: Int, for conversationID: UUID) {
+        do {
+            try dbQueue.write { db in
+                try db.execute(sql: "UPDATE conversations SET summary = ?, summary_msg_count = ? WHERE id = ?",
+                               arguments: [summary, messageCount, conversationID.uuidString])
+            }
+        } catch {
+            print("[store] setSummary failed: \(error)")
+        }
+        if conversationID == activeConversationID { refreshActiveInfo() }
+    }
+
     /// Delete a conversation and all its messages (FK cascade). Never touches disk
     /// artifacts.
     func delete(_ conversationID: UUID) {
@@ -340,6 +371,7 @@ final class ConversationStore: ObservableObject {
         conversations = fetchConversations(projectScope: activeProjectID, restrictTo: matchIDs)
         allProjects = fetchAllProjects()
         activeProject = activeProjectID.flatMap { id in allProjects.first { $0.id == id } }
+        refreshActiveInfo()
 
         if activeProjectID == nil {
             let convProjectIDs = matchIDs.map { projectIDs(forConversationIDs: $0) } ?? []
@@ -394,6 +426,38 @@ final class ConversationStore: ObservableObject {
         }
         guard let ids else { return items }
         return items.filter { ids.contains($0.id.uuidString) }
+    }
+
+    /// Re-read the open conversation's pill info. Cheap (one row), so it runs on
+    /// every reload and whenever the open conversation changes.
+    private func refreshActiveInfo() {
+        guard let id = activeConversationID else {
+            if activeInfo != nil { activeInfo = nil }
+            return
+        }
+        let row = try? dbQueue.read { db in
+            try Row.fetchOne(db, sql: """
+                SELECT c.title AS title, c.summary AS summary, c.project_id AS project_id,
+                       (SELECT m.content FROM messages m
+                        WHERE m.conversation_id = c.id AND m.content != ''
+                        ORDER BY m.position DESC LIMIT 1) AS preview
+                FROM conversations c WHERE c.id = ?
+                """, arguments: [id.uuidString])
+        }
+        guard let row, let title: String = row["title"] else {
+            if activeInfo != nil { activeInfo = nil }
+            return
+        }
+        let projectID = (row["project_id"] as String?).flatMap(UUID.init(uuidString:))
+        let preview = ImagePathScanner.stripMarkers(row["preview"] ?? "")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        let summary = (row["summary"] as String?).flatMap { $0.isEmpty ? nil : $0 }
+        let info = ActiveConversationInfo(
+            id: id, title: title, summary: summary, preview: preview,
+            project: projectID.flatMap { pid in allProjects.first { $0.id == pid } }
+        )
+        if info != activeInfo { activeInfo = info }
     }
 
     private func fetchAllProjects() -> [ProjectListItem] {
@@ -868,6 +932,14 @@ final class ConversationStore: ObservableObject {
         migrator.registerMigration("v8_message_provenance", foreignKeyChecks: .immediate) { db in
             try db.execute(sql: "ALTER TABLE messages ADD COLUMN source TEXT")
             try db.execute(sql: "ALTER TABLE messages ADD COLUMN dictation_original TEXT")
+        }
+        // One-line conversation summary for the chat pane's top pill (Apple
+        // Intelligence), plus the message count it was written at so it refreshes
+        // every few turns instead of every turn. NULL = not summarised yet; the
+        // pill falls back to the latest message. .immediate FK-check, as v3/v4.
+        migrator.registerMigration("v9_conversation_summary", foreignKeyChecks: .immediate) { db in
+            try db.execute(sql: "ALTER TABLE conversations ADD COLUMN summary TEXT")
+            try db.execute(sql: "ALTER TABLE conversations ADD COLUMN summary_msg_count INTEGER")
         }
         return migrator
     }

@@ -10,6 +10,11 @@ struct MessageBubble: View, Equatable {
     /// Non-nil only on the latest local assistant answer — invoking it escalates the
     /// turn to the cloud specialist. The parent decides when to offer it.
     var onConsult: (() -> Void)? = nil
+    /// The open in-chat search query, passed only to messages that contain a match;
+    /// those matches render highlighted (see ChatSearch).
+    var highlight: String? = nil
+    /// This message holds the search's current match: ringed, and scrolled to by the parent.
+    var isCurrentMatch = false
 
     /// This turn was produced by a cloud model (tag contains "cloud").
     private var isCloudTurn: Bool { message.model?.contains("cloud") ?? false }
@@ -23,6 +28,7 @@ struct MessageBubble: View, Equatable {
     static func == (lhs: MessageBubble, rhs: MessageBubble) -> Bool {
         lhs.message == rhs.message && lhs.projectDir == rhs.projectDir
             && (lhs.onConsult == nil) == (rhs.onConsult == nil)
+            && lhs.highlight == rhs.highlight && lhs.isCurrentMatch == rhs.isCurrentMatch
     }
     @Environment(\.chatFontSize) private var fontSize
     @Environment(\.chatLineHeight) private var lineHeight
@@ -78,7 +84,7 @@ struct MessageBubble: View, Equatable {
 
     /// The message body — only ever mounted for non-heavy content (see isHeavyMarkdown).
     private var renderedContent: some View {
-        Markdown(displayContent)
+        Markdown(highlight.map { ChatSearch.mark(displayContent, query: $0) } ?? displayContent)
             .markdownTheme(chatTheme)
             .textSelection(.enabled)
     }
@@ -110,6 +116,14 @@ struct MessageBubble: View, Equatable {
             }
             .strong { FontWeight(.semibold) }
             .link { ForegroundColor(.accentColor) }
+            // In-chat search marks matches as strikethrough; render those as a highlight.
+            .strikethrough {
+                if highlight != nil {
+                    BackgroundColor(ChatSearch.highlightColor)
+                } else {
+                    StrikethroughStyle(.single)
+                }
+            }
             .paragraph { configuration in
                 configuration.label
                     .fixedSize(horizontal: false, vertical: true)
@@ -188,6 +202,13 @@ struct MessageBubble: View, Equatable {
                 // images with no text of its own.
                 if !displayContent.isEmpty || (message.isStreaming && message.toolCalls.isEmpty) {
                     bubbleContent
+                        .overlay {
+                            if isCurrentMatch {
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .strokeBorder(ChatSearch.currentMatchColor, lineWidth: 2)
+                                    .allowsHitTesting(false)
+                            }
+                        }
                 }
                 // Inline images: generated results and uploaded/referenced images.
                 if !imagePaths.isEmpty {

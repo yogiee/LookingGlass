@@ -1,6 +1,15 @@
 import SwiftUI
 import AppKit
 
+/// Shared edges of the floating chrome. The sidebar's top lines up with the chat's
+/// top pill and its bottom with the composer, so all three sit between the same two
+/// lines (WORKSPACE/mockups/chat-pill-bar.html, A5). Equal top and bottom: 14 pt at
+/// the top read as cramped against the window edge next to a 30 pt bottom.
+enum ChromeInsets {
+    static let top: CGFloat = 30
+    static let bottom: CGFloat = 30
+}
+
 // NSVisualEffectView with .behindWindow blending — the only way to get true
 // frosted-desktop blur in SwiftUI. SwiftUI materials alone can't reach outside
 // the window frame to sample the desktop.
@@ -145,8 +154,8 @@ struct RootView: View {
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
                             .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
                     )
-                    .padding(.top, 50)
-                    .padding(.bottom, 30)
+                    .padding(.top, ChromeInsets.top)
+                    .padding(.bottom, ChromeInsets.bottom)
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
@@ -156,9 +165,11 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // Title-bar strip: drag to move, double-click to zoom (clear of the traffic lights).
+        // Only as tall as the gap above the sidebar and the chat's top pill, so it never
+        // sits over their controls; the pill moves the window itself.
         .overlay(alignment: .top) {
             TitleBarBehavior()
-                .frame(height: 28)
+                .frame(height: ChromeInsets.top)
                 .padding(.leading, 72)
         }
         .blur(radius: reportPanel.isVisible ? 6 : 0, opaque: false)
@@ -216,6 +227,13 @@ struct RootView: View {
         .onChange(of: sidecar.status) { _, newStatus in
             if newStatus == .running {
                 Task { await modelCatalog.refresh(ollamaHost: ollamaHost) }
+            }
+        }
+        // The top pill's project name: show that project's chats in the sidebar.
+        .onReceive(NotificationCenter.default.publisher(for: .revealChatsSidebar)) { _ in
+            railSelectionRaw = RailTab.chats.rawValue
+            if !sidebarVisible {
+                withAnimation(.spring(duration: 0.22)) { sidebarVisible = true }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in

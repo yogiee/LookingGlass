@@ -41,6 +41,25 @@ final class AppleIntelligenceService {
         return title.isEmpty ? nil : String(title.prefix(80))
     }
 
+    /// Describe what a conversation is about, for the chat pane's top pill. The pill
+    /// clips it to one line and the hover card shows it whole, so it can run a little
+    /// long — but it reads as a description of the topic, never as a chat reply.
+    func generateConversationSummary(title: String, transcript: String) async -> String? {
+        guard isAvailable else { return nil }
+        let session = LanguageModelSession(
+            instructions: """
+                Describe what this conversation is about and where it has got to, in one or two \
+                sentences and under 40 words. Write it as a description of the topic in the third \
+                person, not as a reply. Return only the description, no preamble or quotes.
+                """
+        )
+        let prompt = "Title: \(title)\n\n\(transcript)"
+        guard let response = try? await session.respond(to: prompt) else { return nil }
+        let summary = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"“”"))
+        return summary.isEmpty ? nil : String(summary.prefix(320))
+    }
+
     /// Generate a one-line description for a memory entry.
     func generateMemorySummary(_ text: String) async -> String? {
         guard isAvailable else { return nil }
