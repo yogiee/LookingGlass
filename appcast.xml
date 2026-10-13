@@ -6,6 +6,33 @@
     <description>Looking Glass — local AI research companion. Update feed.</description>
     <language>en</language>
     <item>
+      <title>0.9.5</title>
+      <description><![CDATA[
+        <h3>Looking Glass 0.9.5 — Alice's own voice, images that work, and a new look</h3>
+        <ul>
+          <li>Alice sounds like Alice. Pick a voice in Settings → Voice: QUALITY and QUALITY+ speak in her own voice, LIGHT is quick and clear, and AUTO picks the best one that fits beside your chat model. Voices download on request, and downloads can be paused and resumed.</li>
+          <li>Alice can make and edit images again, on your Mac. Ask for a picture and she draws it with FLUX.2 [klein] in about 25 seconds; ask for changes and she edits the same image, keeping it sharp. Download the image model once in Settings → System → Images (4.3 GB).</li>
+          <li>Every chat has a glass title bar: the title, a one-line summary written on your Mac, the project's colour and name, delete, and ⌘F to search the chat you're in.</li>
+          <li>A cleaner message box: one line with the mic and send. Press + for attachments, formatting, the model and Deep Research.</li>
+          <li>Liquid Glass. The window follows System Settings → Appearance. Prefer the old look? Choose Frosted in Settings → Style.</li>
+          <li>Alice sees your images herself — answers in about 6 seconds instead of 30, and more often right.</li>
+          <li>4× upscaling in under a second, using Apple's built-in super-resolution.</li>
+          <li>The System panel now shows the Neural Engine and the models Looking Glass runs itself, beside Ollama's.</li>
+          <li>Chats that start with a hello get a proper title once there's something to name.</li>
+          <li>The app stays small: the voice engine, voices and image model download only if you want them, and updates never re-send them.</li>
+        </ul>
+        <p>Requires macOS 27 on Apple Silicon. Summaries, speech recognition, Alice's voice and image generation all run on your Mac.</p>
+      ]]></description>
+      <pubDate>Tue, 13 Oct 2026 13:05:00 +0530</pubDate>
+      <sparkle:version>25</sparkle:version>
+      <sparkle:shortVersionString>0.9.5</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/yogiee/LookingGlass/releases/download/v0.9.5/LookingGlass.dmg"
+        sparkle:edSignature="e6ijPeCyHeUafseTqZ+f/7+9WwA275Oe6S9cREbRFpRWOu1hdBFwiWdzwtmbBflnBqjJCSkAlzi3CCvCj+NYAg==" length="52299302"
+        type="application/octet-stream" />
+    </item>
+    <item>
       <title>0.9.0</title>
       <description><![CDATA[
         <h3>Looking Glass 0.9.0 — talk to Alice, and hear her back</h3>
