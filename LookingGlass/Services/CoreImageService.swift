@@ -9,7 +9,7 @@ import ImageIO
 ///
 /// Resize policy (visually confirmed 2026-07-04): downscale unconstrained; upscale capped at 2×
 /// Lanczos; sharpen is a light `CISharpenLuminance` (0.4) — no heavy halos. Real detail-adding
-/// upscale of generated art is Slice 3 (Real-ESRGAN 4×), not this.
+/// upscale of generated art is Slice 3 (`SuperResolutionService`, Apple 4×), not this.
 enum CoreImageService {
     private static let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     private static let context = CIContext(options: [.workingColorSpace: colorSpace])
@@ -55,8 +55,8 @@ enum CoreImageService {
         CIImage(contentsOf: URL(fileURLWithPath: path))?.extent.size
     }
 
-    /// Linear blend of two same-size images (for the upscale Strength dial): `amount` 1.0 = all
-    /// `top` (Real-ESRGAN), 0.0 = all `base` (Lanczos). Dials back the "plasticky" GAN look.
+    /// Linear blend of two same-size images (for the upscale review's Detail slider): `amount` 1.0 = all
+    /// `top` (the fully sharpened upscale), 0.0 = all `base` (the plain upscale).
     static func blend(_ base: NSImage?, over top: NSImage?, amount t: Double) -> NSImage? {
         guard let top else { return base }
         guard let base, t < 0.999,
@@ -64,8 +64,8 @@ enum CoreImageService {
               let tcg = top.cgImage(forProposedRect: nil, context: nil, hints: nil),
               let f = CIFilter(name: "CIDissolveTransition") else { return top }
         let bci = CIImage(cgImage: bcg)
-        f.setValue(bci, forKey: kCIInputImageKey)                     // t=0 → base (Lanczos)
-        f.setValue(CIImage(cgImage: tcg), forKey: kCIInputTargetImageKey)  // t=1 → top (ESRGAN)
+        f.setValue(bci, forKey: kCIInputImageKey)                     // t=0 → base
+        f.setValue(CIImage(cgImage: tcg), forKey: kCIInputTargetImageKey)  // t=1 → top
         f.setValue(max(0, t), forKey: kCIInputTimeKey)
         guard let out = f.outputImage, let cg = context.createCGImage(out, from: bci.extent) else { return top }
         return NSImage(cgImage: cg, size: bci.extent.size)

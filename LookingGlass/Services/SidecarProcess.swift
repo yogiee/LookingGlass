@@ -42,6 +42,13 @@ class SidecarProcess: ObservableObject {
         proc.executableURL = URL(fileURLWithPath: python)
         proc.arguments = ["main.py"]
         proc.currentDirectoryURL = URL(fileURLWithPath: sidecarDir)
+        if AppEnvironment.isBundledApp {
+            // Inside the .app the sidecar's folder is part of the signed bundle: a __pycache__ written there
+            // invalidates the app's code signature. The venv's packages are precompiled at build time.
+            var env = ProcessInfo.processInfo.environment
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+            proc.environment = env
+        }
 
         let pipe = Pipe()
         proc.standardOutput = pipe

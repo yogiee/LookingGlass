@@ -10,6 +10,11 @@ prior gemma4:latest (0.767). Non-reasoning VLM, so think:False is a harmless
 no-op (cf. qwen3-vl, whose unkillable thinking made it unusable here).
 num_ctx matches the benched 16384 to avoid truncating image tokens on dense
 images / OCR; the model is tiny so the RAM cost is negligible.
+
+Since 2026-09-22 this is the FALLBACK path: a vision-capable local chat model (the gemma4 family) is
+handed the shared images directly (agent._attach_images_natively) and never needs this tool for them.
+It still serves chat models without vision, cloud models (which only ever get this tool's text), and
+older images in a long chat that are beyond the native cap.
 """
 import base64
 from pathlib import Path

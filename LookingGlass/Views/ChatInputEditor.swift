@@ -167,10 +167,15 @@ struct ChatInputEditor: NSViewRepresentable {
     }
 
     private func applyAttributes(_ tv: NSTextView) {
+        // The Settings line height as space BETWEEN lines, not lineHeightMultiple:
+        // the multiple puts its extra above every line's glyphs, which made the caret
+        // taller than the text and sat a single line low in the composer pill. Same
+        // line pitch either way; this keeps the caret glyph-high.
+        let font = fontChoice.nsFont(fontSize)
         let para = NSMutableParagraphStyle()
-        para.lineHeightMultiple = lineHeight
+        para.lineSpacing = NSLayoutManager().defaultLineHeight(for: font) * max(0, lineHeight - 1)
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: fontChoice.nsFont(fontSize),
+            .font: font,
             .paragraphStyle: para,
             .foregroundColor: NSColor.labelColor,
             .kern: ChatFont.tracking(fontSize),

@@ -4,6 +4,12 @@ import AppKit
 extension Notification.Name {
     /// Posted by the Settings… menu item (⌘,) — RootView reveals the settings rail.
     static let openSettings = Notification.Name("openSettings")
+    /// Edit ▸ Find in Chat (⌘F), Find Next (⌘G), Find Previous (⇧⌘G) — ChatView's in-chat search.
+    static let findInChat = Notification.Name("findInChat")
+    static let findNextInChat = Notification.Name("findNextInChat")
+    static let findPreviousInChat = Notification.Name("findPreviousInChat")
+    /// The chat pill's project name was clicked — RootView opens the chats sidebar.
+    static let revealChatsSidebar = Notification.Name("revealChatsSidebar")
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -68,6 +74,22 @@ struct LookingGlassApp: App {
                     NotificationCenter.default.post(name: .openSettings, object: nil)
                 }
                 .keyboardShortcut(",", modifiers: .command)
+            }
+            // Replaces the stock Find submenu: the only thing worth finding is in the
+            // open chat, and the text views don't run AppKit's find bar.
+            CommandGroup(replacing: .textEditing) {
+                Button("Find in Chat…") {
+                    NotificationCenter.default.post(name: .findInChat, object: nil)
+                }
+                .keyboardShortcut("f", modifiers: .command)
+                Button("Find Next") {
+                    NotificationCenter.default.post(name: .findNextInChat, object: nil)
+                }
+                .keyboardShortcut("g", modifiers: .command)
+                Button("Find Previous") {
+                    NotificationCenter.default.post(name: .findPreviousInChat, object: nil)
+                }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
             }
             CommandGroup(after: .appInfo) {
                 if AppEnvironment.isBundledApp {

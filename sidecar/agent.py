@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import os
 import re
@@ -21,10 +22,12 @@ from router import classify_mode, detect_image_request
 from skill_loader import skills_index
 from tools.context import (
     ollama_host as _ctx_ollama_host,
+    reset_chat_model,
     reset_ollama_host,
     reset_project_dir,
     reset_working_dir,
     output_subdir,
+    set_chat_model,
     set_ollama_host,
     set_project_dir,
     set_working_dir,
@@ -52,6 +55,77 @@ async def _model_supports_tools(client: httpx.AsyncClient, host: str, model: str
         ok = True
     _TOOL_CAP_CACHE[model] = ok
     return ok
+
+
+# Native vision (2026-09-22). A vision-capable LOCAL model (the gemma4 family) sees the images the
+# user shares directly — Ollama's per-message `images` — instead of the describe_image hop through a
+# second model (qwen2.5vl:3b). Measured on 13 real inputs: 88% vs 83% correct, ~6 s vs ~32 s per image,
+# and no second model loaded (WORKSPACE/vision-eval-2026-09-22). describe_image remains the path for
+# models without vision and for cloud models, which have only ever received a local model's text
+# description of an image — never the pixels.
+_VISION_CAP_CACHE: dict[str, bool] = {}
+_IMAGE_MARKER = re.compile(r"\[Image:\s*([^\]]+)\]")
+_MAX_NATIVE_IMAGES = 6                     # gemma4 spends ~260 prompt tokens per image → ~1.6K of 16K
+_MAX_NATIVE_IMAGE_BYTES = 20 * 1024 * 1024
+
+_NATIVE_VISION_NOTE = (
+    "## Images\n"
+    "Images the user shares are attached to their messages and you can see them directly. Look at "
+    "the image yourself and answer from what you see — don't call describe_image for an image you can "
+    "already see. That tool is only for an older image that still appears as an `[Image: …]` path."
+)
+
+
+def _is_cloud_model(model: str) -> bool:
+    """Ollama cloud models are tagged `…:cloud` or `…-cloud` (e.g. gemma4:31b-cloud). /api/show doesn't
+    mark them as remote, and they can report `vision` too, so the tag is the signal."""
+    tag = model.rsplit(":", 1)[1] if ":" in model else ""
+    return tag == "cloud" or tag.endswith("-cloud")
+
+
+async def _model_supports_vision(client: httpx.AsyncClient, host: str, model: str) -> bool:
+    """Whether `model` advertises Ollama's 'vision' capability. Cached per model. Fail-CLOSED, unlike
+    tools: the describe_image path works for every model, so a probe error just keeps it (uncached)."""
+    if model in _VISION_CAP_CACHE:
+        return _VISION_CAP_CACHE[model]
+    try:
+        r = await client.post(f"{host}/api/show", json={"model": model}, timeout=5.0)
+        ok = "vision" in (r.json().get("capabilities") or [])
+    except Exception:
+        return False
+    _VISION_CAP_CACHE[model] = ok
+    return ok
+
+
+def _attach_images_natively(messages: list[dict]) -> tuple[list[dict], int]:
+    """A copy of `messages` where the newest user-shared images (up to _MAX_NATIVE_IMAGES) move from
+    their `[Image: /path]` markers into Ollama's `images` field. Older images keep their marker, so
+    describe_image can still read them on demand; so does a marker whose file is gone (attachments
+    currently live in the temp dir) or is too large. Returns (messages, number of images attached)."""
+    out = [dict(m) for m in messages]
+    budget = _MAX_NATIVE_IMAGES
+    for m in reversed(out):
+        if budget <= 0:
+            break
+        if m.get("role") != "user" or "[Image:" not in (m.get("content") or ""):
+            continue
+        content, images = m["content"], []
+        for match in _IMAGE_MARKER.finditer(m["content"]):
+            if budget <= 0:
+                break
+            path = Path(match.group(1).strip()).expanduser()
+            try:
+                if not path.is_file() or path.stat().st_size > _MAX_NATIVE_IMAGE_BYTES:
+                    continue
+                images.append(base64.b64encode(path.read_bytes()).decode("ascii"))
+            except OSError:
+                continue
+            content = content.replace(match.group(0), "", 1)
+            budget -= 1
+        if images:
+            m["images"] = images
+            m["content"] = content.strip()
+    return out, _MAX_NATIVE_IMAGES - budget
 
 
 _TOOL_ERROR_PREFIX = (
@@ -106,6 +180,70 @@ def _sanitize_tool_args(tool, args: dict) -> dict:
     elif "model" in props and (args.get("model") in (None, "", "default")):
         args.pop("model", None)
     return args
+
+
+BUILTIN_IMAGE_TOOL = "generate_image"
+
+# The app sends past messages as text only, so it appends `[Generated image: <path>]` to Alice's messages for the
+# images her tools made (SidecarClient.historyContent). Left in place, she copies the pattern — writing a marker
+# with an invented path instead of calling the tool (seen 2026-10-13). So the markers are lifted out of her
+# messages here and listed in the system prompt, where she reads them but never sees herself write them.
+_GENERATED_MARKER = re.compile(r"\[Generated image:\s*([^\]]+)\]")
+_MAX_EARLIER_IMAGES = 6
+
+
+def _lift_generated_images(messages: list[dict]) -> tuple[list[dict], list[str]]:
+    """Strip `[Generated image: …]` markers from assistant messages; return the messages and the paths that
+    still exist, oldest first (the newest _MAX_EARLIER_IMAGES)."""
+    out: list[dict] = []
+    paths: list[str] = []
+    for m in messages:
+        content = m.get("content") or ""
+        if m.get("role") == "assistant" and "[Generated image:" in content:
+            paths += [p.strip() for p in _GENERATED_MARKER.findall(content)]
+            m = {**m, "content": _GENERATED_MARKER.sub("", content).strip()}
+        out.append(m)
+    seen: set[str] = set()
+    kept = [p for p in reversed(paths) if p not in seen and not seen.add(p) and Path(p).expanduser().is_file()]
+    return out, list(reversed(kept[:_MAX_EARLIER_IMAGES]))
+
+
+def _earlier_images_note(paths: list[str]) -> str:
+    listing = "\n".join(f"- {p}" for p in paths)
+    return (
+        "## Images in this conversation\n"
+        f"Images you made earlier with generate_image, newest last:\n{listing}\n\n"
+        "To change one, call generate_image with edit_image set to its path and describe the change. An image "
+        "only exists if the tool made it in THIS turn: never say you made or changed one without calling the tool, "
+        "and never write image markers or file paths yourself."
+    )
+
+_IMAGE_SHOWN_NOTE = (
+    "The image is now on the user's screen. Reply to them in plain prose — a sentence or two in your own "
+    "voice about what you made. No JSON, no file path, no tool syntax."
+)
+
+
+def _is_image_tool(tool) -> bool:
+    props = (tool.parameters or {}).get("properties", {})
+    return "output_dir" in props and "prompt" in props
+
+
+def _prefer_builtin_image_tool(registry: "ToolRegistry", enabled: list[str] | None) -> list[str] | None:
+    """One image tool per request: when the built-in Core AI generator is registered, every other image tool
+    (OllamaMCP's `local_image`, dead since Ollama removed image generation) is left out, so Alice can't pick a
+    broken one. A saved tool list that enabled an image tool but predates the built-in one gets the built-in
+    in its place — the user asked for image generation; this is now where it lives."""
+    if registry.get(BUILTIN_IMAGE_TOOL) is None:
+        return enabled
+    names = enabled if enabled is not None else registry.names()
+    others = [n for n in names if n != BUILTIN_IMAGE_TOOL and (t := registry.get(n)) is not None and _is_image_tool(t)]
+    if not others:
+        return enabled
+    kept = [n for n in names if n not in others]
+    if BUILTIN_IMAGE_TOOL not in kept:
+        kept.append(BUILTIN_IMAGE_TOOL)
+    return kept
 
 
 def _find_image_tool(registry: "ToolRegistry", enabled: list[str] | None) -> str | None:
@@ -428,12 +566,14 @@ class AgentConfig:
     models: dict = field(default_factory=dict)  # global [models] routing table
 
 
-def _ambient_context(extra: dict | None = None) -> str:
+def _ambient_context(extra: dict | None = None, model: str | None = None) -> str:
     """Alice's ENVIRONMENT — what's true RIGHT NOW, so she doesn't guess or fall back on her training
     cutoff (the wrong-year fabrications). This is her 'home': she should know the ground she stands on,
     not just the tools she can call.
 
-    Phase 1 (here, sidecar, zero-permission): date + local time + timezone/region.
+    Phase 1 (here, sidecar, zero-permission): date + local time + timezone/region + the model voicing
+    this turn. Without that last line, "which model are you?" had nothing true to answer from and gemma4
+    fell back to its stock model-card line, dropping Alice's voice entirely (2026-09-23 probes).
     Phase 2 (later): the Swift app passes precise location (CoreLocation), weather (WeatherKit), and
     device state via `extra` — they merge in below with no further change here.
     """
@@ -449,6 +589,12 @@ def _ambient_context(extra: dict | None = None) -> str:
         f"- Date: {now.strftime('%A, %B %-d, %Y')}",
         f"- Local time: {now.strftime('%-I:%M %p')} ({part})" + (f", timezone {tz}" if tz else ""),
     ]
+    if model:
+        # The anchor sentence is load-bearing, not decoration: on gemma4:12b-mlx a bare model line made
+        # "Who are you?" open with "I'm Gemma 4…" 9/10 times; with the anchor, 1/10 (no line: 0/10).
+        where = (" for this turn: {m} (a cloud model via Ollama, off this Mac)" if _is_cloud_model(model)
+                 else ": {m} (local, on this Mac via Ollama)").format(m=model)
+        lines.append(f"- Alice's engine{where}. You are Alice; the engine is only what you run on.")
     for k, v in (extra or {}).items():
         if v:
             lines.append(f"- {str(k).replace('_', ' ').capitalize()}: {v}")
@@ -547,7 +693,7 @@ async def chat_stream(
     # Situate Alice in her environment (date/time/timezone) so she doesn't guess or fall back on her
     # training cutoff — the root of the wrong-year fabrications. Extensible via _ambient_context(extra):
     # Swift can later add precise location + weather + device state. (2026-07-09; fix_current_date_injection)
-    base_prompt = _ambient_context(environment) + "\n\n" + base_prompt
+    base_prompt = _ambient_context(environment, resolved_model) + "\n\n" + base_prompt
 
     # Output scope: explicit working_dir → project folder → user's configured
     # files root (independent chats) → default ~/Documents/LookingGlass. Tool
@@ -643,11 +789,15 @@ async def chat_stream(
     guidelines = read_guidelines(project_dir)
     if guidelines:
         parts.append(guidelines)
+    messages, earlier_images = _lift_generated_images(messages)
+    if earlier_images:
+        parts.append(_earlier_images_note(earlier_images))
     active_prompt = "\n\n---\n\n".join(parts)
 
     wd_token = set_working_dir(work_path)
     pd_token = set_project_dir(Path(project_dir).expanduser() if project_dir else None)
     oh_token = set_ollama_host(host)
+    cm_token = set_chat_model(resolved_model)
 
     full: list[dict] = [{"role": "system", "content": active_prompt}] + messages
 
@@ -659,6 +809,7 @@ async def chat_stream(
         effective_tools: list[str] | None = [n for n in base if n != "use_skill"]
     else:
         effective_tools = enabled_tools
+    effective_tools = _prefer_builtin_image_tool(registry, effective_tools)
     tool_schemas = registry.ollama_schemas(effective_tools)
 
     total_in = 0
@@ -723,6 +874,19 @@ async def chat_stream(
                     ):
                         yield ev
                     return
+
+            # Native vision: a vision-capable LOCAL model gets the shared images themselves (see
+            # _attach_images_natively). Cloud lanes and vision-less models keep the `[Image: …]` markers,
+            # which they read through describe_image as before. After the silent-hands branch on purpose:
+            # that dormant path keeps its original messages.
+            if not _is_cloud_model(resolved_model) and await _model_supports_vision(
+                client, host, resolved_model
+            ):
+                native_messages, n_images = _attach_images_natively(messages)
+                if n_images:
+                    vision_prompt = active_prompt + "\n\n---\n\n" + _NATIVE_VISION_NOTE
+                    full = [{"role": "system", "content": vision_prompt}] + native_messages
+                    print(f"[agent] native vision: {n_images} image(s) attached for {resolved_model}")
 
             for turn in range(config.max_turns):
                 payload = {
@@ -879,6 +1043,7 @@ async def chat_stream(
                         full.append({"role": "user", "content": "Now write your answer."})
 
                 # Execute each tool, streaming start/result, and feed results back.
+                image_shown = False
                 for i, tc in enumerate(tool_calls):
                     fn = tc.get("function", {})
                     name = fn.get("name", "")
@@ -939,6 +1104,16 @@ async def chat_stream(
                         "content": history_result,
                         "tool_name": name,
                     })
+                    if result.get("success") and tool is not None and _is_image_tool(tool):
+                        image_shown = True
+
+                # After a successful image, gemma4 answers with a JSON echo of the call
+                # ({"action": "generate_image", "action_input": …}) instead of talking —
+                # reproduced straight against Ollama with every result/description wording
+                # tried (2026-10-13). One short note fixes it (3/3, in voice), the same move
+                # as the think/use_skill nudges above.
+                if image_shown:
+                    full.append({"role": "system", "content": _IMAGE_SHOWN_NOTE})
 
             # Hit the turn ceiling without the model settling.
             yield {
@@ -951,7 +1126,8 @@ async def chat_stream(
         # different asyncio context than it started (client disconnect, early break),
         # resetting the contextvar token raises ValueError — harmless cleanup noise,
         # so don't let it propagate out of the generator's teardown.
-        for _reset, _tok in ((reset_working_dir, wd_token), (reset_project_dir, pd_token), (reset_ollama_host, oh_token)):
+        for _reset, _tok in ((reset_working_dir, wd_token), (reset_project_dir, pd_token),
+                             (reset_ollama_host, oh_token), (reset_chat_model, cm_token)):
             try:
                 _reset(_tok)
             except (ValueError, LookupError):

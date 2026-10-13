@@ -39,6 +39,67 @@ class ChatViewModel: ObservableObject {
             .compactMap { Self.extractResearchPath(from: $0.result) }
             .last(where: { FileManager.default.fileExists(atPath: $0) })
         researchStatus = researchReportPath != nil ? "Report ready" : nil
+        // Chats from before summaries existed get one the first time they're opened.
+        if let conversationID {
+            refreshSummaryIfNeeded(conversationID, messages: messages, store: store)
+        }
+    }
+
+    // MARK: Summary (top pill description)
+
+    /// Conversations with a summary request in flight, so overlapping triggers (a turn
+    /// finishing while the chat is reopened) don't ask twice.
+    private var summarizing: Set<UUID> = []
+
+    /// Messages between summary refreshes: about every three exchanges. Every turn
+    /// would be wasteful; the gist of a chat rarely moves that fast.
+    private static let summaryRefreshInterval = 6
+
+    /// Write or refresh the conversation's one-line summary in the background when it
+    /// has none yet or has moved on by `summaryRefreshInterval` messages. Never blocks
+    /// the turn: the input unlocks while Apple Intelligence works.
+    func refreshSummaryIfNeeded(_ conversationID: UUID, messages: [Message], store: ConversationStore) {
+        let turns = messages.filter { ($0.role == .user || $0.role == .assistant) && !$0.content.isEmpty }
+        guard turns.contains(where: { $0.role == .assistant }) else { return }
+        let state = store.summaryState(conversationID)
+        guard state.summary == nil || turns.count - state.messageCount >= Self.summaryRefreshInterval,
+              AppleIntelligenceService.shared.isAvailable,
+              !summarizing.contains(conversationID) else { return }
+
+        summarizing.insert(conversationID)
+        let title = store.activeInfo?.id == conversationID ? store.activeInfo?.title ?? "" : ""
+        let transcript = Self.summaryTranscript(turns)
+        let count = turns.count
+        Task { [weak self] in
+            let summary = await AppleIntelligenceService.shared.generateConversationSummary(
+                title: title, transcript: transcript)
+            self?.summarizing.remove(conversationID)
+            if let summary { store.setSummary(summary, messageCount: count, for: conversationID) }
+        }
+    }
+
+    /// A compact transcript for the summariser: the opening exchange (it sets the
+    /// topic) plus as much of the recent tail as fits, each message clipped. Sized
+    /// well inside the on-device model's context window.
+    private static func summaryTranscript(_ turns: [Message]) -> String {
+        func clip(_ text: String, _ limit: Int) -> String {
+            let flat = ImagePathScanner.stripMarkers(text)
+                .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            return flat.count > limit ? String(flat.prefix(limit)) + "…" : flat
+        }
+        let lines = turns.map { m in
+            m.role == .user ? "User: \(clip(m.content, 300))" : "Alice: \(clip(m.content, 400))"
+        }
+        var head = Array(lines.prefix(2))
+        var budget = 3200 - head.reduce(0) { $0 + $1.count }
+        var tail: [String] = []
+        for line in lines.dropFirst(2).reversed() {
+            guard budget - line.count >= 0 else { break }
+            tail.insert(line, at: 0)
+            budget -= line.count
+        }
+        if lines.count > head.count + tail.count { head.append("…") }
+        return (head + tail).joined(separator: "\n")
     }
 
     func send(model: String?, ollamaHost: String, enabledTools: [String]?, systemPrompt: String?, userName: String?, mcpHintsEnabled: [String: Bool]? = nil, researchMode: Bool = false, store: ConversationStore, attachmentPath: String? = nil,
@@ -62,16 +123,13 @@ class ChatViewModel: ObservableObject {
         // Setting loadedConversationID *before* activeConversationID means the
         // view's onChange guard treats this as "already loaded" and won't reload.
         let conversationID: UUID
-        let isFirstTurn: Bool
         if let active = loadedConversationID {
             conversationID = active
-            isFirstTurn = false
         } else {
             let newID = store.createConversation(title: Self.deriveTitle(text))
             loadedConversationID = newID
             store.activeConversationID = newID
             conversationID = newID
-            isFirstTurn = true
         }
         store.appendMessage(userMessage, to: conversationID)
 
@@ -79,7 +137,7 @@ class ChatViewModel: ObservableObject {
                 enabledTools: enabledTools, systemPrompt: systemPrompt, userName: userName,
                 mcpHintsEnabled: mcpHintsEnabled, researchMode: researchMode, specialistMode: false,
                 voiceMode: voiceMode,
-                conversationID: conversationID, isFirstTurn: isFirstTurn, titleSeed: text, store: store)
+                conversationID: conversationID, titleSeed: text, store: store)
     }
 
     /// "Consult the big model": re-run the last user turn on the specialist (cloud)
@@ -99,7 +157,7 @@ class ChatViewModel: ObservableObject {
         runTurn(history: history, model: nil, ollamaHost: ollamaHost,
                 enabledTools: enabledTools, systemPrompt: systemPrompt, userName: userName,
                 mcpHintsEnabled: mcpHintsEnabled, researchMode: false, specialistMode: true,
-                conversationID: conversationID, isFirstTurn: false, titleSeed: seed, store: store)
+                conversationID: conversationID, titleSeed: seed, store: store)
     }
 
     /// Append a streaming assistant placeholder, stream the turn from the sidecar, and
@@ -108,7 +166,7 @@ class ChatViewModel: ObservableObject {
                          enabledTools: [String]?, systemPrompt: String?, userName: String?,
                          mcpHintsEnabled: [String: Bool]?, researchMode: Bool, specialistMode: Bool,
                          voiceMode: Bool = false,
-                         conversationID: UUID, isFirstTurn: Bool, titleSeed: String,
+                         conversationID: UUID, titleSeed: String,
                          store: ConversationStore) {
         messages.append(Message(role: .assistant, content: "", isStreaming: true))
         isStreaming = true
@@ -166,17 +224,23 @@ class ChatViewModel: ObservableObject {
                     guard !Task.isCancelled else { break }
                     apply(event)
                 }
-                // After the first assistant reply, replace the derived title with an
-                // FM-generated one — more descriptive than the raw first line of user input.
-                if isFirstTurn, !Task.isCancelled,
-                   let assistantContent = messages.last.map({ $0.role == .assistant ? $0.content : "" }),
-                   !assistantContent.isEmpty {
+                // Replace the derived title (the first line the user typed) with an FM-generated one.
+                // A first exchange that's only a greeting has no topic, so FM returns nil and the next
+                // turns try again, as long as the title is still the derived one: a user rename stops it.
+                if !Task.isCancelled,
+                   let reply = messages.last, reply.role == .assistant, !reply.content.isEmpty,
+                   let firstUser = messages.first(where: { $0.role == .user }),
+                   messages.filter({ $0.role == .user }).count <= Self.titleAttempts,
+                   store.title(conversationID) == Self.deriveTitle(firstUser.content) {
                     // Feed the FM a marker-free prompt — a raw file path can trip its guardrails
                     // (→ nil → no rename, leaving the ugly "[Image: …]" title).
                     if let fmTitle = await AppleIntelligenceService.shared.generateConversationTitle(
-                        userMessage: ImagePathScanner.stripMarkers(titleSeed), assistantReply: assistantContent) {
+                        userMessage: ImagePathScanner.stripMarkers(titleSeed), assistantReply: reply.content) {
                         store.rename(conversationID, to: fmTitle)
                     }
+                }
+                if !Task.isCancelled {
+                    refreshSummaryIfNeeded(conversationID, messages: messages, store: store)
                 }
             } catch {
                 if let idx = messages.indices.last, messages[idx].content.isEmpty,
@@ -186,6 +250,9 @@ class ChatViewModel: ObservableObject {
             }
         }
     }
+
+    /// User turns over which an untitled chat keeps asking for a title (see `runTurn`).
+    private static let titleAttempts = 3
 
     /// Conversation title from the first user message — first line, trimmed, capped. Strips any
     /// `[Image: /path]` markers first so an image-drop chat doesn't title itself with a file path
@@ -302,11 +369,17 @@ struct ChatView: View {
     @State private var pendingImage: NSImage?
     @State private var isRecognizingText = false   // brief OCR pass on a freshly pasted image
     @State private var isDropTargeted = false      // image drag hovering the input bar
+    /// The (+) tray. Every chat opens with it closed; within a chat it stays as left.
+    @State private var trayOpen = false
 
     private var inputMinHeight: CGFloat { fontSize + 8 }
     private var inputMaxHeight: CGFloat { (fontSize + 8) * 7 }
-    // Reserve scroll space for the whole input region (text field + bottom bar + padding)
-    private var inputReserve: CGFloat { inputHeight + 84 }
+    // Reserve scroll space for the whole input region: the text, the pill's padding,
+    // the bottom inset, and the tray / floating chips when they're showing.
+    private var inputReserve: CGFloat {
+        max(inputHeight, Self.composerRowHeight) + 10 + ChromeInsets.bottom + 8
+            + (trayOpen ? 40 : 0) + (showsFloatingChips || viewModel.isResearching ? 36 : 0)
+    }
 
     /// Dim level for input-bar controls while a turn runs — everything except STOP
     /// is disabled, and this makes the lock visible at a glance.
@@ -344,6 +417,15 @@ struct ChatView: View {
     /// (never steals focus from another field, e.g. Settings → System Prompt).
     @State private var refocusAfterStream = false
 
+    // In-chat search (the top pill's magnifier / ⌘F). `searchQuery` is what's typed;
+    // `activeSearchQuery` trails it by a beat so the bubbles don't re-render markdown
+    // on every keystroke.
+    @State private var isSearchingChat = false
+    @State private var searchQuery = ""
+    @State private var activeSearchQuery = ""
+    @State private var searchMatchIndex = 0
+    @State private var searchFocusRequest = 0
+
     var body: some View {
         ZStack(alignment: .bottom) {
             messageList
@@ -354,20 +436,28 @@ struct ChatView: View {
                 AliceEmptyState()
                     .transition(.opacity)
             }
-            // Research progress banner + input bar stacked so banner sits flush above
-            VStack(spacing: 0) {
-                if viewModel.isResearching, let status = viewModel.researchStatus {
-                    ResearchProgressBanner(status: status)
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
-                }
-                floatingInputBar
-            }
+            floatingInputBar
         }
         .animation(.easeInOut(duration: 0.4), value: viewModel.messages.isEmpty)
         .animation(.easeInOut(duration: 0.2), value: viewModel.isResearching)
+        .overlay(alignment: .top) { topPillLayer }
+        .task(id: searchQuery) {
+            let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !query.isEmpty { try? await Task.sleep(for: .milliseconds(150)) }
+            guard !Task.isCancelled else { return }
+            activeSearchQuery = query
+            // Start on the most recent match: the chat sits scrolled to the bottom, and
+            // ↑ walks back through older ones.
+            searchMatchIndex = max(0, searchHits.total - 1)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .findInChat)) { _ in openSearch() }
+        .onReceive(NotificationCenter.default.publisher(for: .findNextInChat)) { _ in stepMatch(by: 1) }
+        .onReceive(NotificationCenter.default.publisher(for: .findPreviousInChat)) { _ in stepMatch(by: -1) }
         // Sidebar selection (or New Chat) drives which conversation is shown.
         // Guard against the self-triggered change when send() creates a new one.
         .onChange(of: store.activeConversationID) { _, newID in
+            closeSearch()
+            trayOpen = false
             if newID != viewModel.loadedConversationID {
                 reportPanel.dismiss()
                 viewModel.load(newID, store: store)
@@ -385,6 +475,13 @@ struct ChatView: View {
         // sentence-buffered narration is its own problem, and a half-formed
         // sentence read aloud is worse than a beat of silence.
         .onChange(of: viewModel.isStreaming) { _, streaming in
+            // A narrated turn has just started: warm the voice now, in parallel with the chat model's
+            // reply, so narration starts in ~0.3 s instead of paying a model load after the reply lands.
+            // Free on the system engine; the neural voice may have been released after idling.
+            if streaming, narrateNextReply, speechOutput.isEnabled {
+                Task { await speechOutput.warmUp() }
+                return
+            }
             guard !streaming, narrateNextReply else { return }
             narrateNextReply = false
             // Voice mode doesn't override the Read-aloud setting: if speech
@@ -632,6 +729,8 @@ struct ChatView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             let projectDir = activeProjectDir   // resolve once per render, not per bubble
+            let hits = searchHits                // likewise: one search pass, not one per bubble
+            let currentMatchID = currentMatchMessageID(in: hits)
             ScrollView {
                 HStack(spacing: 0) {
                     Spacer(minLength: 50)
@@ -655,7 +754,9 @@ struct ChatView: View {
                                     && !msg.isStreaming
                                     && !(msg.model?.contains("cloud") ?? false)
                                 MessageBubble(message: msg, projectDir: projectDir,
-                                              onConsult: canConsult ? { consult() } : nil)
+                                              onConsult: canConsult ? { consult() } : nil,
+                                              highlight: hits.perMessage[msg.id] != nil ? activeSearchQuery : nil,
+                                              isCurrentMatch: msg.id == currentMatchID)
                                     .equatable()
                                     .id(msg.id)
                             }
@@ -670,7 +771,8 @@ struct ChatView: View {
                     }
                     .frame(maxWidth: 960)
                     .padding(.horizontal, 24)
-                    .padding(.top, 96)
+                    // Clear the top pill, plus breathing room.
+                    .padding(.top, ChromeInsets.top + ChatTopPill.height + 30)
                     Spacer(minLength: 50)
                 }
             }
@@ -678,7 +780,7 @@ struct ChatView: View {
             .mask(
                 VStack(spacing: 0) {
                     LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                        .frame(height: 80)
+                        .frame(height: ChromeInsets.top + ChatTopPill.height + 14)   // fade ends just below the pill
                     Color.black
                     LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
                         .frame(height: 120)
@@ -686,6 +788,10 @@ struct ChatView: View {
             )
             .onChange(of: viewModel.messages.last?.content) { _, _ in
                 proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            .onChange(of: currentMatchID) { _, id in
+                guard let id else { return }
+                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
             }
             .onChange(of: viewModel.researchReportPath) { _, path in
                 if path != nil {
@@ -722,89 +828,239 @@ struct ChatView: View {
         .padding(.horizontal, 16)
     }
 
+    // MARK: Top pill + in-chat search
+
+    /// The title pill, spanning the same column as the composer. Only for a saved
+    /// chat with messages; a fresh chat belongs to Alice's empty state.
+    @ViewBuilder
+    private var topPillLayer: some View {
+        if !viewModel.messages.isEmpty, let info = store.activeInfo,
+           info.id == viewModel.loadedConversationID {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                ChatTopPill(
+                    info: info,
+                    isSearching: $isSearchingChat,
+                    query: $searchQuery,
+                    focusRequest: searchFocusRequest,
+                    matchCount: searchHits.total,
+                    matchIndex: searchMatchIndex,
+                    onNextMatch: { stepMatch(by: 1) },
+                    onPreviousMatch: { stepMatch(by: -1) },
+                    onCloseSearch: { closeSearch() },
+                    onRename: { store.rename(info.id, to: $0) },
+                    onDelete: { store.delete(info.id) },
+                    onOpenProject: { projectID in
+                        store.openProject(projectID)
+                        NotificationCenter.default.post(name: .revealChatsSidebar, object: nil)
+                    }
+                )
+                .frame(maxWidth: 960)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, ChromeInsets.top)
+            .transition(.opacity)
+        }
+    }
+
+    /// Matches for the active search: per message (in display order) and in total.
+    private var searchHits: SearchHits {
+        guard isSearchingChat, !activeSearchQuery.isEmpty else { return ([:], [], 0) }
+        var perMessage: [UUID: Int] = [:]
+        var ordered: [(id: UUID, count: Int)] = []
+        var total = 0
+        for msg in viewModel.messages where msg.role == .user || msg.role == .assistant {
+            let n = ChatSearch.occurrences(of: activeSearchQuery, in: ChatSearch.searchableText(msg))
+            guard n > 0 else { continue }
+            perMessage[msg.id] = n
+            ordered.append((msg.id, n))
+            total += n
+        }
+        return (perMessage, ordered, total)
+    }
+
+    private typealias SearchHits = (perMessage: [UUID: Int], ordered: [(id: UUID, count: Int)], total: Int)
+
+    /// The message holding the current match, which gets the ring and the scroll.
+    private func currentMatchMessageID(in hits: SearchHits) -> UUID? {
+        var remaining = searchMatchIndex
+        for hit in hits.ordered {
+            if remaining < hit.count { return hit.id }
+            remaining -= hit.count
+        }
+        return nil
+    }
+
+    private func openSearch() {
+        guard !viewModel.messages.isEmpty, store.activeInfo != nil else { return }
+        isSearchingChat = true
+        searchFocusRequest += 1
+    }
+
+    private func closeSearch() {
+        isSearchingChat = false
+        searchQuery = ""
+        activeSearchQuery = ""
+        searchMatchIndex = 0
+    }
+
+    /// Step through matches, wrapping at either end.
+    private func stepMatch(by delta: Int) {
+        let total = searchHits.total
+        guard total > 0 else { return }
+        searchMatchIndex = (searchMatchIndex + delta + total) % total
+    }
+
     // MARK: Floating input bar
+
+    /// The composer's corner radius: half its one-line height, so at rest it's a true
+    /// capsule matching the top pill, and a stretched capsule as text wraps.
+    private static let composerRadius: CGFloat = 26
+    /// Height of the composer row (and of one line of text): with 5 pt of padding
+    /// above and below, the resting pill is 52 pt — the same as the top pill.
+    private static let composerRowHeight: CGFloat = 42
 
     private var floatingInputBar: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
-            VStack(spacing: 0) {
-                // Errors only. The running transcript moved into the formatting
-                // row, so keeping this strip for it would say the same thing
-                // twice and stack a fourth band above the composer. A denied mic
-                // or failed asset install still needs to be readable, and it
-                // clears on the next mic press.
-                if speechInput.errorMessage != nil {
-                    ListeningStrip()
-                        .transition(.opacity)
+            VStack(alignment: .leading, spacing: 8) {
+                // A research run's progress takes the chips' spot while it runs.
+                if viewModel.isResearching, let status = viewModel.researchStatus {
+                    ResearchProgressBanner(status: status)
+                        .padding(.leading, 8)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                } else if showsFloatingChips {
+                    // Settings hidden in the closed tray that change the next send. They
+                    // float above the pill so the pill keeps its whole width for text.
+                    floatingChips
+                        .padding(.leading, 8)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
-                if !uncertainWords.isEmpty {
-                    reviewStrip
-                        .transition(.opacity)
-                }
-                if isRecognizingText {
-                    ocrReadingStrip
-                        .transition(.opacity)
-                }
-                if let img = pendingImage {
-                    attachmentStrip(img)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-                // Text field — top of the bar. In voice mode the spectrograph
-                // takes its place, EXCEPT when a transcript is waiting to be
-                // corrected: when the system needs help it shows words, not a
-                // waveform. Fixing and sending returns the spectrograph.
+                composerCapsule
+            }
+            .frame(maxWidth: 960)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, ChromeInsets.bottom)
+        .animation(.easeInOut(duration: 0.16), value: inputFocused)
+        .animation(.easeInOut(duration: 0.3), value: viewModel.isStreaming)
+        .animation(.spring(duration: 0.28), value: trayOpen)
+        .animation(.easeInOut(duration: 0.2), value: showsFloatingChips)
+    }
+
+    /// The composer pill: (+) · text · mic · send. (+) raises a tray of tools above the
+    /// text row, so the row and its buttons never move under the pointer.
+    private var composerCapsule: some View {
+        VStack(spacing: 6) {
+            // Errors only. The running transcript lives under the composer row in
+            // voice mode, so keeping this strip for it would say the same thing
+            // twice. A denied mic or failed asset install still needs to be
+            // readable, and it clears on the next mic press.
+            if speechInput.errorMessage != nil {
+                ListeningStrip()
+                    .transition(.opacity)
+            }
+            if !uncertainWords.isEmpty {
+                reviewStrip
+                    .transition(.opacity)
+            }
+            if isRecognizingText {
+                ocrReadingStrip
+                    .transition(.opacity)
+            }
+            if trayOpen {
+                composerTray
+                    .padding(.top, 4)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+            if let img = pendingImage {
+                attachmentStrip(img)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+            composerRow
+            if composerMode.isVoice {
+                voiceStatusLine
+                    .transition(.opacity)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity)
+        .glassEffect(.regular, in: .rect(cornerRadius: Self.composerRadius, style: .continuous))
+        // Mode wash. Over the glass rather than under it, so the tint is
+        // actually visible instead of being averaged away by the material.
+        .overlay(
+            RoundedRectangle(cornerRadius: Self.composerRadius, style: .continuous)
+                .fill(ComposerTint.color(for: composerMode))
+                .opacity(ComposerTint.opacity(for: composerMode, scheme: colorScheme))
+                .allowsHitTesting(false)
+        )
+        .animation(.easeInOut(duration: 0.28), value: composerMode)
+        .onDrop(of: [.image, .fileURL], isTargeted: $isDropTargeted) { providers in
+            loadDroppedImage(providers)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: Self.composerRadius, style: .continuous)
+                .strokeBorder(Color.accentColor, lineWidth: isDropTargeted ? 2 : 0)
+                .animation(.easeInOut(duration: 0.12), value: isDropTargeted)
+        )
+        // "Working" shimmer — a light lap around the border for as long as the turn
+        // runs. Persists through tool calls, where the thinking label has already
+        // been replaced by tool cards and only STOP hinted that work continues.
+        .overlay {
+            if viewModel.isStreaming {
+                ProcessingShimmerBorder(
+                    cornerRadius: Self.composerRadius,
+                    tint: composerMode.isVoice ? ComposerTint.voice : .accentColor
+                )
+                    .transition(.opacity)
+            }
+        }
+    }
+
+    /// (+) · text (or spectrograph) · mic · send. Bottom-aligned, so as the text wraps
+    /// the buttons stay level with its last line.
+    private var composerRow: some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            plusButton
+                .frame(height: Self.composerRowHeight)
+            Group {
+                // In voice mode the spectrograph takes the text's place, EXCEPT when
+                // a transcript is waiting to be corrected: when the system needs help
+                // it shows words, not a waveform. Fixing and sending returns it.
                 if composerMode.isVoice && uncertainWords.isEmpty {
                     SpectrographView(
                         levels: speechInput.levels,
                         tint: ComposerTint.voice,
                         state: spectrographState
                     )
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
+                    .padding(.horizontal, 6)
                     .transition(.opacity)
                 } else {
                     inputTextField
                 }
-                // Bottom row: formatting buttons (when focused) + send/stop button
-                inputBottomBar
             }
-            .frame(maxWidth: 960)
-            .glassEffect(.regular, in: .rect(cornerRadius: 16, style: .continuous))
-            // Mode wash. Over the glass rather than under it, so the tint is
-            // actually visible instead of being averaged away by the material.
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(ComposerTint.color(for: composerMode))
-                    .opacity(ComposerTint.opacity(for: composerMode, scheme: colorScheme))
-                    .allowsHitTesting(false)
-            )
-            .animation(.easeInOut(duration: 0.28), value: composerMode)
-            .onDrop(of: [.image, .fileURL], isTargeted: $isDropTargeted) { providers in
-                loadDroppedImage(providers)
+            .frame(maxWidth: .infinity, minHeight: Self.composerRowHeight, alignment: .leading)
+
+            // Dictation auto-sends — unless the recogniser flagged a word it
+            // doubted, in which case it lands in the composer instead and waits.
+            // The system asks for help only when it knows it needs it.
+            MicButton(
+                isDisabled: viewModel.isStreaming,
+                isVoiceMode: voiceModeArmed,
+                onToggleVoiceMode: { toggleVoiceMode() }
+            ) { utterance in
+                // A bare mic-hold is a one-off dictation, so it never narrates;
+                // arming voice mode is what asks Alice to speak back.
+                deliver(utterance, narrate: voiceModeArmed)
             }
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.accentColor, lineWidth: isDropTargeted ? 2 : 0)
-                    .animation(.easeInOut(duration: 0.12), value: isDropTargeted)
-            )
-            // "Working" shimmer — a light lap around the border for as long as the turn
-            // runs. Persists through tool calls, where the thinking label has already
-            // been replaced by tool cards and only STOP hinted that work continues.
-            .overlay {
-                if viewModel.isStreaming {
-                    ProcessingShimmerBorder(
-                        cornerRadius: 16,
-                        tint: composerMode.isVoice ? ComposerTint.voice : .accentColor
-                    )
-                        .transition(.opacity)
-                }
-            }
-            Spacer(minLength: 0)
+            .frame(height: Self.composerRowHeight)
+
+            sendButton
+                .frame(height: Self.composerRowHeight)
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 30)
-        .animation(.easeInOut(duration: 0.16), value: inputFocused)
-        .animation(.easeInOut(duration: 0.3), value: viewModel.isStreaming)
     }
 
     private var inputTextField: some View {
@@ -814,7 +1070,10 @@ struct ChatView: View {
                     .font(fontChoice.font(fontSize))
                     .tracking(ChatFont.tracking(fontSize))
                     .foregroundStyle(.tertiary)
-                    .padding(.leading, 5)
+                    .lineLimit(1)
+                    // Where typed text starts: the editor's 4 pt inset + 5 pt line-fragment
+                    // padding, plus a point so the caret sits just before the first letter.
+                    .padding(.leading, 10)
                     .padding(.top, 7)
                     .allowsHitTesting(false)
             }
@@ -834,9 +1093,10 @@ struct ChatView: View {
             )
             .frame(height: inputHeight)
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 10)
-        .padding(.bottom, 4)
+        // Wide leading gap: macOS draws its input/Siri badge ~28 pt left of the caret,
+        // and with less room it lands on the (+) button.
+        .padding(.leading, 20)
+        .padding(.trailing, 4)
         .opacity(viewModel.isStreaming ? lockedOpacity : 1)
     }
 
@@ -887,23 +1147,8 @@ struct ChatView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: chatModelOverride != nil ? "cpu.fill" : "cpu")
-                    .font(.system(size: 11))
-                Text(modelSwitcherLabel)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-            }
-            .foregroundStyle(chatModelOverride != nil ? Color.accentColor : Color.secondary.opacity(0.8))
-            .padding(.horizontal, 8)
-            .frame(height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(chatModelOverride != nil ? Color.accentColor.opacity(0.1) : Color.clear)
-            )
-            .contentShape(Rectangle())
+            TrayChipLabel(icon: chatModelOverride != nil ? "cpu.fill" : "cpu",
+                          title: modelSwitcherLabel, isOn: chatModelOverride != nil, showsChevron: true)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -912,69 +1157,89 @@ struct ChatView: View {
         .help("Model for this chat. Overrides the global default here only.")
     }
 
-    private var inputBottomBar: some View {
-        HStack(alignment: .center, spacing: 2) {
-            // Attach image — file picker. The reliable, discoverable input path (paste + drag are
-            // shortcuts). Always visible.
+    private var sendButton: some View {
+        Button {
+            if viewModel.isStreaming {
+                viewModel.cancelStream()
+            } else if speechOutput.isActive {
+                // While Alice narrates, send *is* stop — she's the only
+                // thing in flight, and the mic un-mutes the moment she ends.
+                speechOutput.stop()
+            } else if composerMode.isVoice {
+                sendFromVoice()
+            } else {
+                submit()
+            }
+        } label: {
+            Image(systemName: sendButtonIsStop ? "stop.circle.fill" : "arrow.up.circle.fill")
+                .font(.system(size: 32))
+                .foregroundStyle(sendButtonIsStop ? Color.red : Color.accentColor)
+        }
+        .buttonStyle(.plain)
+        // In voice mode the composer is empty by definition — what would be
+        // sent lives in the transcript, so the text-emptiness test doesn't
+        // apply.
+        .disabled(!sendButtonIsStop && !composerMode.isVoice
+                  && viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                  && pendingAttachment == nil)
+    }
+
+    /// Opens and closes the tray; turns into × while it's open.
+    private var plusButton: some View {
+        Button {
+            trayOpen.toggle()
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(trayOpen ? Color.primary : Color.secondary)
+                .rotationEffect(.degrees(trayOpen ? 45 : 0))
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(Color.primary.opacity(trayOpen ? 0.14 : 0.08)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(trayOpen ? "Hide tools" : "Attach an image, format, pick the model, Deep Research")
+    }
+
+    /// The tools behind (+): Attach · formatting · model · Deep Research.
+    private var composerTray: some View {
+        HStack(spacing: 4) {
+            // Attach image — file picker. The reliable, discoverable input path (paste
+            // and drag are shortcuts).
             Button { presentImagePicker() } label: {
-                Image(systemName: "photo.badge.plus")
-                    .font(.system(size: 15))
-                    .foregroundStyle(Color.secondary.opacity(0.8))
-                    .frame(width: 30, height: 30)
-                    .contentShape(Rectangle())
+                TrayChipLabel(icon: "photo.badge.plus", title: "Attach", isOn: false)
             }
             .buttonStyle(.plain)
+            .help("Attach an image")
             .disabled(viewModel.isStreaming)
             .opacity(viewModel.isStreaming ? lockedOpacity : 1)
-            .help("Attach an image")
-            // Formatting buttons are dead weight in voice mode, so the row is
-            // reused for the running transcript rather than adding yet another
-            // strip above the composer. One dim line: enough to catch a
-            // disaster mid-sentence, not enough to become a second text field.
-            if composerMode.isVoice {
-                Group {
-                    if viewModel.isStreaming {
-                        // The mic is muted here, so "Listening…" would be a lie.
-                        // Alice's own thinking words belong in the composer once
-                        // it's the thing that's working.
-                        ThinkingLabel(font: .system(size: 11), tracking: 0)
-                    } else {
-                        Text(voiceTranscriptLine)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .truncationMode(.head)
-                    }
-                }
-                .padding(.leading, 6)
-            } else if inputFocused {
-                Group {
+
+            // Formatting is dead weight in voice mode.
+            if !composerMode.isVoice {
+                HStack(spacing: 0) {
                     FormatButton(icon: "bold", help: "Bold") { inputController.wrap(prefix: "**", suffix: "**") }
                     FormatButton(icon: "italic", help: "Italic") { inputController.wrap(prefix: "*", suffix: "*") }
                     FormatButton(icon: "chevron.left.forwardslash.chevron.right", help: "Inline code") { inputController.wrap(prefix: "`", suffix: "`") }
                     FormatButton(icon: "curlybraces", help: "Code block") { inputController.wrap(prefix: "\n```\n", suffix: "\n```\n") }
                     FormatButton(icon: "list.bullet", help: "List item") { inputController.wrap(prefix: "\n- ", suffix: "") }
                 }
+                .padding(.leading, 4)
                 .disabled(viewModel.isStreaming)
                 .opacity(viewModel.isStreaming ? lockedOpacity : 1)
             }
-            Spacer()
-            // Per-chat model switcher — quick-access; sets this chat's override (not the
-            // global default). The Cheshire "Model" side panel sets the global default.
+
+            Spacer(minLength: 8)
+
+            // Per-chat model switcher — sets this chat's override (not the global
+            // default). The Cheshire "Model" side panel sets the global default.
             modelSwitcher
                 .opacity(viewModel.isStreaming ? lockedOpacity : 1)
-                .padding(.trailing, 2)
-            // Deep Research toggle — right of formatting buttons, left of send
+
             Button {
                 viewModel.researchMode.toggle()
                 inputController.focus()
             } label: {
-                Image(systemName: "text.magnifyingglass")
-                    .font(.system(size: 15, weight: viewModel.researchMode ? .semibold : .regular))
-                    .foregroundStyle(viewModel.researchMode ? Color.accentColor : Color.secondary.opacity(0.7))
-                    .frame(width: 30, height: 30)
-                    .background(viewModel.researchMode ? Color.accentColor.opacity(0.1) : Color.clear)
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                TrayChipLabel(icon: "text.magnifyingglass", title: "Deep Research", isOn: viewModel.researchMode)
             }
             .buttonStyle(.plain)
             .disabled(viewModel.isStreaming)
@@ -982,51 +1247,49 @@ struct ChatView: View {
             .help(viewModel.researchMode
                   ? "Deep Research active — Alice will search, read sources, and synthesize a report"
                   : "Enable Deep Research mode")
-            .padding(.trailing, 4)
-
-            // Dictation auto-sends — unless the recogniser flagged a word it
-            // doubted, in which case it lands in the composer instead and waits.
-            // The system asks for help only when it knows it needs it.
-            MicButton(
-                isDisabled: viewModel.isStreaming,
-                isVoiceMode: voiceModeArmed,
-                onToggleVoiceMode: { toggleVoiceMode() }
-            ) { utterance in
-                // A bare mic-hold is a one-off dictation, so it never narrates;
-                // arming voice mode is what asks Alice to speak back.
-                deliver(utterance, narrate: voiceModeArmed)
-            }
-            .padding(.trailing, 4)
-
-            Button {
-                if viewModel.isStreaming {
-                    viewModel.cancelStream()
-                } else if speechOutput.isActive {
-                    // While Alice narrates, send *is* stop — she's the only
-                    // thing in flight, and the mic un-mutes the moment she ends.
-                    speechOutput.stop()
-                } else if composerMode.isVoice {
-                    sendFromVoice()
-                } else {
-                    submit()
-                }
-            } label: {
-                Image(systemName: sendButtonIsStop ? "stop.circle.fill" : "arrow.up.circle.fill")
-                    .font(.system(size: 32))
-                    .foregroundStyle(sendButtonIsStop ? Color.red : Color.accentColor)
-            }
-            .buttonStyle(.plain)
-            // In voice mode the composer is empty by definition — what would be
-            // sent lives in the transcript, so the text-emptiness test doesn't
-            // apply.
-            .disabled(!sendButtonIsStop && !composerMode.isVoice
-                      && viewModel.inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                      && pendingAttachment == nil)
         }
-        .padding(.horizontal, 10)
-        .padding(.top, 2)
-        .padding(.bottom, 8)
-        .animation(.easeInOut(duration: 0.16), value: inputFocused)
+        .padding(.horizontal, 2)
+    }
+
+    /// Voice mode's running transcript, one dim line under the spectrograph — enough
+    /// to catch a disaster mid-sentence, not enough to become a second text field.
+    private var voiceStatusLine: some View {
+        Group {
+            if viewModel.isStreaming {
+                // The mic is muted here, so "Listening…" would be a lie.
+                ThinkingLabel(font: .system(size: 11), tracking: 0)
+            } else {
+                Text(voiceTranscriptLine)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 62)   // under the text, which starts 20 pt past (+)
+        .padding(.bottom, 2)
+    }
+
+    /// Chips over the closed composer for settings that change the next send.
+    private var showsFloatingChips: Bool {
+        !trayOpen && (viewModel.researchMode || chatModelOverride != nil)
+    }
+
+    private var floatingChips: some View {
+        HStack(spacing: 6) {
+            if viewModel.researchMode {
+                ArmedChip(icon: "text.magnifyingglass", title: "Deep Research",
+                          onOpen: { trayOpen = true },
+                          onClear: { viewModel.researchMode = false })
+            }
+            if chatModelOverride != nil {
+                ArmedChip(icon: "cpu.fill", title: modelSwitcherLabel,
+                          onOpen: { trayOpen = true },
+                          onClear: { selectChatModel(nil) })
+                    .disabled(viewModel.isStreaming)
+            }
+        }
     }
 
     /// Shown instead of auto-sending when the recogniser doubted a word. Naming
@@ -1200,6 +1463,76 @@ struct SystemNoticeRow: View {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// Label for a tray control: icon + title in a capsule, accent-tinted when on.
+struct TrayChipLabel: View {
+    let icon: String
+    let title: String
+    let isOn: Bool
+    var showsChevron = false
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 12))
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+            if showsChevron {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+        }
+        .foregroundStyle(isOn ? Color.accentColor : (hovering ? Color.primary : Color.secondary))
+        .padding(.horizontal, 11)
+        .frame(height: 30)
+        .background(
+            Capsule().fill(isOn ? Color.accentColor.opacity(0.16) : Color.primary.opacity(hovering ? 0.12 : 0.08))
+        )
+        .overlay(Capsule().strokeBorder(Color.accentColor.opacity(isOn ? 0.35 : 0), lineWidth: 1))
+        .contentShape(Capsule())
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.12), value: hovering)
+    }
+}
+
+/// A setting that's on while the tray is closed (Deep Research, a per-chat model),
+/// floating above the composer. The body opens the tray; × clears the setting.
+struct ArmedChip: View {
+    let icon: String
+    let title: String
+    let onOpen: () -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button(action: onOpen) {
+                HStack(spacing: 5) {
+                    Image(systemName: icon)
+                        .font(.system(size: 11))
+                    Text(title)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Show tools")
+            Button(action: onClear) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .opacity(0.75)
+            }
+            .buttonStyle(.plain)
+            .help("Turn off")
+        }
+        .foregroundStyle(Color.accentColor)
+        .padding(.horizontal, 10)
+        .frame(height: 28)
+        .glassEffect(.regular.tint(Color.accentColor.opacity(0.18)), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.38), lineWidth: 1))
     }
 }
 

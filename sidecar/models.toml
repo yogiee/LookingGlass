@@ -97,7 +97,7 @@ role = "vision"
 tier = "lite"
 location = "local"
 recommended = false
-note = "Image-description tool model. Chat-capable but not its job."
+note = "Image-description tool model (describe_image), the fallback since 2026-09-22: vision-capable local chat models see images natively. Chat-capable but not its job."
 
 [models."llama3.2:3b"]
 role = "router"

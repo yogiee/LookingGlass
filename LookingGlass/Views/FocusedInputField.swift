@@ -34,7 +34,7 @@ struct FocusedTextField: View {
         }
             .padding(.vertical, 7)
             .padding(.horizontal, 10)
-            .background(.regularMaterial, in: .rect(cornerRadius: 8, style: .continuous))
+            .background(Color.primary.opacity(0.07), in: .rect(cornerRadius: 8, style: .continuous))   // fill, not material: it sits on glass
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(isFocused ? Color.primary.opacity(0.07) : Color.clear)
@@ -77,7 +77,7 @@ struct FocusedTextEditor: View {
                 .padding(.horizontal, 6)
                 .focused($isFocused)
         }
-        .background(.regularMaterial, in: .rect(cornerRadius: 8, style: .continuous))
+        .background(Color.primary.opacity(0.07), in: .rect(cornerRadius: 8, style: .continuous))   // fill, not material: it sits on glass
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isFocused ? Color.primary.opacity(0.07) : Color.clear)

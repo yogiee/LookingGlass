@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Compact status strip shown below the message list while a Deep Research
-/// run is in progress. Phase is derived from incoming tool_call_start events
-/// in ChatViewModel — no sidecar changes required.
+/// Compact status capsule floating above the composer while a Deep Research run is
+/// in progress (where the setting chips sit otherwise). Phase is derived from
+/// incoming tool_call_start events in ChatViewModel — no sidecar changes required.
 struct ResearchProgressBanner: View {
     let status: String
 
@@ -12,15 +12,12 @@ struct ResearchProgressBanner: View {
                 .scaleEffect(0.65)
                 .frame(width: 14, height: 14)
             Text(status)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(.secondary)
-            Spacer()
+                .lineLimit(1)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 7)
-        .background(.regularMaterial)
-        .overlay(alignment: .top) {
-            Divider().opacity(0.5)
-        }
+        .padding(.horizontal, 12)
+        .frame(height: 28)
+        .glassEffect(.regular, in: Capsule())
     }
 }

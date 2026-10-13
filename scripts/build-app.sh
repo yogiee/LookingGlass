@@ -17,15 +17,21 @@ BUILD_DIR="$PROJECT_DIR/build"
 APP_NAME="LookingGlass"          # bundle + binary name (no spaces)
 DISPLAY_NAME="Looking Glass"     # shown in Finder / Dock / menu bar
 BUNDLE_ID="com.yogi.LookingGlass"
-VERSION="0.9.0"
-BUILD_NUMBER="24"
+VERSION="0.9.5"
+BUILD_NUMBER="25"
 
 # Shared EdDSA public key for Sparkle (private key in Keychain, machine-bound).
 SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-k47OPDePNJN2Iyiu28Hz73RzNv/GHyryeSPWvGhv1+c=}"
 SUFEED_URL="https://raw.githubusercontent.com/yogiee/LookingGlass/main/appcast.xml"
 
 # Homebrew Python used to create the embedded venv (interpreter is copied via --copies).
-HOST_PYTHON="${HOST_PYTHON:-/opt/homebrew/bin/python3}"
+# Pinned to 3.14: Homebrew's bare `python3` moved to 3.15, which MLX (mlx-audio → the
+# QUALITY voice tiers) has no wheels for yet, so pip fails. Unpin once MLX ships 3.15.
+HOST_PYTHON="${HOST_PYTHON:-/opt/homebrew/bin/python3.14}"
+if [ ! -x "$HOST_PYTHON" ]; then
+    echo "ERROR: $HOST_PYTHON not found — brew install python@3.14, or set HOST_PYTHON." >&2
+    exit 1
+fi
 
 echo "=== Building $DISPLAY_NAME ($CONFIG) v$VERSION ==="
 
@@ -41,11 +47,17 @@ fi
 BUILT_BINARY="$BUILD_OUT/$APP_NAME"
 [ -f "$BUILT_BINARY" ] || { echo "ERROR: binary not found at $BUILT_BINARY"; exit 1; }
 
+# The image generator helper (ImageGenHelper/, FLUX.2 [klein] on Core AI). Always release: debug Swift makes its
+# per-step work needlessly slow, whatever the app's config.
+swift build -c release --product lg-imagegen --package-path "$PROJECT_DIR"
+HELPER_OUT="$PROJECT_DIR/.build/release"
+[ -f "$HELPER_OUT/lg-imagegen" ] || { echo "ERROR: lg-imagegen not found at $HELPER_OUT"; exit 1; }
+
 # ── 2. Bundle skeleton ───────────────────────────────────────────────────────
 echo "  [2/8] Creating app bundle..."
 APP="$BUILD_DIR/$APP_NAME.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks" "$APP/Contents/Helpers"
 
 # ── 3. Executable + Sparkle framework ────────────────────────────────────────
 echo "  [3/8] Copying executable + Sparkle.framework..."
@@ -58,6 +70,13 @@ if [ -d "$SPARKLE_FW" ]; then
 else
     echo "  WARNING: Sparkle.framework not found at $SPARKLE_FW"
 fi
+
+# The image generator, which the sidecar runs once per image (Contents/Resources/sidecar → ../../Helpers). Its
+# SwiftPM resource bundles sit beside it, where Bundle.module looks for them.
+cp "$HELPER_OUT/lg-imagegen" "$APP/Contents/Helpers/lg-imagegen"
+for b in "$HELPER_OUT"/swift-transformers_Hub.bundle "$HELPER_OUT"/swift-crypto_Crypto.bundle; do
+    [ -d "$b" ] && cp -R "$b" "$APP/Contents/Helpers/"
+done
 
 # SwiftPM resource bundle (avatars/backgrounds load from here via Bundle.module).
 RES_BUNDLE="$BUILD_OUT/${APP_NAME}_${APP_NAME}.bundle"
@@ -128,7 +147,7 @@ cat > "$APP/Contents/Info.plist" << PLIST
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>$VERSION</string>
 	<key>CFBundleVersion</key><string>$BUILD_NUMBER</string>
-	<key>LSMinimumSystemVersion</key><string>26.0</string>
+	<key>LSMinimumSystemVersion</key><string>27.0</string>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>NSHumanReadableCopyright</key><string>Copyright © 2026 Yogi. All rights reserved.</string>
 	<key>LSUIElement</key><false/>
@@ -174,6 +193,8 @@ echo "  [7/8] Ad-hoc code signing..."
 find "$APP" -name '.DS_Store' -delete
 xattr -cr "$APP"
 codesign --force --sign - --timestamp=none "$APP/Contents/Frameworks/Sparkle.framework"
+# A loose executable isn't reached by --deep: sign the helper explicitly (as with the venv interpreters).
+codesign --force --sign - --timestamp=none "$APP/Contents/Helpers/lg-imagegen"
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep "$APP" || { echo "  ERROR: code signature invalid — app will crash on launch"; exit 1; }
 

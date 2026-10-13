@@ -8,11 +8,13 @@ struct SettingsSystemTab: View {
     @AppStorage("appleIntelligenceEnabled") private var appleIntelligenceEnabled = true
     @AppStorage("semanticSearchEnabled") private var semanticSearchEnabled = false
     @AppStorage(SpeechOutputService.Keys.enabled) private var voiceOutputEnabled = true
-    @AppStorage(SpeechOutputService.Keys.voice) private var ttsVoiceIdentifier = ""
     @AppStorage(SpeechOutputService.Keys.rate) private var ttsRate = 0.5
     @ObservedObject private var speech = SpeechOutputService.shared
     @AppStorage("ocrPastedImages") private var ocrPastedImages = true
     @ObservedObject private var upscaler = SuperResolutionService.shared
+    @ObservedObject private var imageGen = ImageGenModelService.shared
+    @State private var imageGenMessage: String?
+    @State private var imageGenBusy = false
     @AppStorage("filesRoot") private var filesRoot = ""
 
     /// Where independent (non-project) chats save files when no custom path is set.
@@ -25,8 +27,6 @@ struct SettingsSystemTab: View {
 
     @State private var tools: [ToolInfo] = []
     @State private var loadingTools = true
-    /// Enumerated once — the system engine vends ~180 entries across 44 locales.
-    @State private var voices: [VoiceOption] = []
     @State private var promptExpanded = false
     @State private var showingPromptImporter = false
 
@@ -66,17 +66,11 @@ struct SettingsSystemTab: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .task { await loadTools() }
-        // Free on the system engine; on a backend with a model to load this is
-        // what keeps the Preview button from stalling on first press.
-        .task { await speech.warmUp() }
-        .onAppear { voices = speech.voices() }
-        // Downloading a voice happens in System Settings, so the new one only exists
-        // once we come back — re-enumerate on reactivation rather than showing a
-        // stale list right after the user acted on the hint below.
-        .onReceive(NotificationCenter.default.publisher(
-            for: NSApplication.didBecomeActiveNotification
-        )) { _ in
-            voices = speech.voices()
+        // Re-read the voice engine (installs, AUTO's answer), then warm whatever is in effect: free on
+        // the system engine; on Alice's neural voice it's what keeps Preview from stalling on first press.
+        .task {
+            await speech.refresh()
+            await speech.warmUp()
         }
     }
 
@@ -92,29 +86,10 @@ struct SettingsSystemTab: View {
             }
 
             if voiceOutputEnabled {
-                voicePicker
+                // Tier, models, the voice in use (Kokoro's packs or the built-in stand-in) and Alice's clip.
+                VoiceTierSettings(speech: speech)
                 rateSlider
                 previewRow
-                if let hint = speech.upgradeHint {
-                    upgradeHintRow(hint)
-                }
-            }
-        }
-    }
-
-    private var voicePicker: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Picker("Voice", selection: $ttsVoiceIdentifier) {
-                Text("Automatic").tag("")
-                Divider()
-                ForEach(voices) { voice in
-                    Text(voice.label).tag(voice.id)
-                }
-            }
-            if ttsVoiceIdentifier.isEmpty, let auto = speech.defaultVoice() {
-                Text("Automatic picks the best installed voice — currently \(auto.name) (\(auto.language)).")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -156,23 +131,6 @@ struct SettingsSystemTab: View {
         "This is how I'll sound when I read something back to you. "
         + "Long answers, short ones, whatever you send my way."
 
-    /// Whatever the active engine offers as its "this could sound better"
-    /// nudge — free voice downloads on the system engine, a model download on a
-    /// neural one. The view doesn't know or care which.
-    private func upgradeHintRow(_ hint: SpeechUpgradeHint) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(hint.message)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-            Button(hint.buttonTitle) { hint.action() }
-                .font(.system(size: 11))
-            if let detail = hint.detail {
-                Text(detail)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
 
     // MARK: Personality
 
@@ -341,7 +299,7 @@ struct SettingsSystemTab: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("4× image upscaler")
                             .font(.system(size: 12, weight: .medium))
-                        Text("On-device RealPLKSR super-resolution — adds real detail to a generated image in the viewer (an “Upscale 4×” button appears). Downloads a ~30 MB model once.")
+                        Text("Apple's on-device super-resolution, built into macOS — enlarges an image in the viewer 4× (an “Upscale 4×” button appears), with a Detail slider for sharpness. Works on images up to \(SuperResolutionService.maxSide) px per side. Nothing to host: if the model isn't on this Mac yet, macOS downloads it once.")
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
@@ -352,29 +310,95 @@ struct SettingsSystemTab: View {
                     Text(msg).font(.system(size: 10)).foregroundStyle(.red)
                 }
             }
+            .onAppear { upscaler.refresh() }   // macOS may have fetched the model since launch
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Image generation")
+                            .font(.system(size: 12, weight: .medium))
+                        Text(String(format: "Alice can create and edit images on this Mac with FLUX.2 [klein] 4B — about 25 seconds an image. To make room, her chat model may be paused while one is drawn; she picks up right after. %.1f GB download.", Double(imageGen.model?.downloadBytes ?? 4_279_000_000) / 1e9))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                        if let model = imageGen.model {
+                            Text("\(model.license) · \(model.source)")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.tertiary)
+                                .textSelection(.enabled)
+                        }
+                        if imageGen.model?.download.isRunning == true, imageGen.model?.download.phase == "verifying" {
+                            Text("Verifying the download…")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    imageGenControl
+                }
+                if let message = imageGenMessage ?? imageGen.model?.download.error {
+                    Text(message).font(.system(size: 10)).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .task { await imageGen.refresh() }
+        }
+    }
+
+    @ViewBuilder private var imageGenControl: some View {
+        if let status = imageGen.status, !status.available {
+            Text(status.unavailableReason ?? "Not available").font(.system(size: 10)).foregroundStyle(.secondary)
+        } else if let model = imageGen.model {
+            let download = model.download
+            if download.isRunning {
+                HStack(spacing: 6) {
+                    ProgressView(value: download.fraction).frame(width: 90)
+                    Text("\(Int(download.fraction * 100))%").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                    Button("Cancel") { runImageGen { await imageGen.cancel() } }.disabled(imageGenBusy)
+                }
+            } else if model.installed {
+                HStack(spacing: 6) {
+                    Label("Ready", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 11)).foregroundStyle(.green)
+                    Button("Remove") { runImageGen { await imageGen.remove() } }
+                        .disabled(imageGenBusy || imageGen.status?.generating == true)
+                }
+            } else {
+                HStack(spacing: 6) {
+                    if download.isResumable {
+                        Text("Paused at \(Int(download.fraction * 100))%").font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    Button(download.isResumable ? "Resume" : "Download") { runImageGen { await imageGen.download() } }
+                        .disabled(imageGenBusy)
+                }
+            }
+        } else {
+            Text("Sidecar not reachable").font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+    }
+
+    private func runImageGen(_ action: @escaping () async -> String?) {
+        imageGenBusy = true
+        imageGenMessage = nil
+        Task {
+            imageGenMessage = await action()
+            imageGenBusy = false
         }
     }
 
     @ViewBuilder private var upscalerControl: some View {
         switch upscaler.status {
-        case .notInstalled, .failed:
+        case .needsDownload, .failed:
             Button("Download") { Task { await upscaler.install() } }
         case .downloading(let p):
             HStack(spacing: 6) {
                 ProgressView(value: p).frame(width: 90)
                 Text("\(Int(p * 100))%").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
             }
-        case .compiling:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Preparing…").font(.system(size: 10)).foregroundStyle(.secondary)
-            }
         case .ready:
-            HStack(spacing: 8) {
-                Label("Installed", systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 11)).foregroundStyle(.green)
-                Button("Remove") { upscaler.remove() }.controlSize(.small)
-            }
+            Label("Ready", systemImage: "checkmark.circle.fill")
+                .font(.system(size: 11)).foregroundStyle(.green)
+        case .unsupported:
+            Text("Not available on this Mac").font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }
 

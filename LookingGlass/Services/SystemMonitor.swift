@@ -9,6 +9,15 @@ struct OllamaModelUsage: Identifiable {
     var id: String { name }
 }
 
+/// A model Looking Glass runs itself, outside Ollama: on Core AI (the image model, the LIGHT voice) or on MLX
+/// in the sidecar (Alice's cloned voice).
+struct LocalModelUsage: Identifiable {
+    let name: String
+    let engine: String       // "Core AI" | "MLX"
+    let gb: Double
+    var id: String { name }
+}
+
 @MainActor
 class SystemMonitor: ObservableObject {
     @Published var cpuPercent: Double = 0
@@ -19,13 +28,22 @@ class SystemMonitor: ObservableObject {
     @Published var ollamaModel: String? = nil
     @Published var ollamaVRAMGB: Double = 0          // total across all running models
     @Published var ollamaModels: [OllamaModelUsage] = []  // per-model breakdown
+    @Published var localModels: [LocalModelUsage] = []
+    /// Neural Engine memory traffic, bytes/s; nil where it can't be read (see `NeuralEngineMonitor`).
+    @Published var aneBytesPerSec: Double? = nil
     @Published var lastTokensPerSec: Double = 0
     @Published var cpuSubtitle: String = ""
     @Published var gpuSubtitle: String = ""
 
     private var timer: Timer?
     private let client = SidecarClient()
+    private let voiceClient = NeuralVoiceClient()
+    private let neuralEngine = NeuralEngineMonitor()
     var ollamaHost: String? = nil
+
+    /// Whether this Mac's Neural Engine traffic can be read at all; the panel hides the card when not.
+    var isNeuralEngineReadable: Bool { neuralEngine != nil }
+    var localModelsGB: Double { localModels.reduce(0) { $0 + $1.gb } }
 
     private struct OllamaPsResponse: Decodable {
         struct Model: Decodable {
@@ -121,9 +139,11 @@ class SystemMonitor: ObservableObject {
         cpuPercent = sampledCPU()
         gpuPercent = ioKitGPU()
         ramUsedGB  = usedRAMGB()
+        aneBytesPerSec = neuralEngine?.bytesPerSecond()
         Task {
             let healthy = await client.health(ollamaHost: ollamaHost)
             ollamaStatus = healthy ? "Running" : "Offline"
+            await fetchLocalModels(sidecarUp: healthy)
             if healthy {
                 await fetchOllamaPs()
             } else {
@@ -151,6 +171,46 @@ class SystemMonitor: ObservableObject {
             ollamaVRAMGB = 0
             ollamaModels = []
         }
+    }
+
+    // MARK: Core AI + MLX — the models Looking Glass loads itself
+
+    private func fetchLocalModels(sidecarUp: Bool) async {
+        var models: [LocalModelUsage] = []
+        // The image model lives only while the lg-imagegen helper runs, so its real footprint is the helper's.
+        if let bytes = Self.footprint(ofProcessNamed: "lg-imagegen"), bytes > 0 {
+            models.append(LocalModelUsage(name: "FLUX.2 [klein] · image", engine: "Core AI", gb: Double(bytes) / 1e9))
+        }
+        let voice = sidecarUp ? await voiceClient.status() : nil
+        if SpeechOutputService.shared.isLightVoiceLoaded {
+            models.append(LocalModelUsage(name: "Kokoro · LIGHT voice", engine: "Core AI",
+                                          gb: voice?.tiers["light"]?.residentGB ?? 0.83))
+        }
+        if let voice, let tier = voice.loadedTier, voice.residentGB > 0 {
+            let label = voice.tiers[tier]?.label ?? tier
+            models.append(LocalModelUsage(name: "Qwen3-TTS · \(label) voice", engine: "MLX", gb: voice.residentGB))
+        }
+        localModels = models
+    }
+
+    /// Physical footprint of the first process with this name (what Activity Monitor calls Memory, GPU
+    /// allocations included on Apple Silicon), or nil if none is running.
+    private static func footprint(ofProcessNamed target: String) -> UInt64? {
+        let capacity = Int(proc_listallpids(nil, 0)) + 64
+        guard capacity > 64 else { return nil }
+        var pids = [pid_t](repeating: 0, count: capacity)
+        let count = Int(proc_listallpids(&pids, Int32(capacity * MemoryLayout<pid_t>.size)))
+        // proc_name returns nothing into a MAXCOMLEN+1 buffer; it wants room for the 2×MAXCOMLEN BSD name.
+        var name = [CChar](repeating: 0, count: 2 * Int(MAXCOMLEN) + 1)
+        for pid in pids.prefix(max(0, count)) where pid > 0 {
+            guard proc_name(pid, &name, UInt32(name.count)) > 0, String(cString: name) == target else { continue }
+            var info = rusage_info_v4()
+            let ok = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) }
+            }
+            return ok == 0 ? info.ri_phys_footprint : nil
+        }
+        return nil
     }
 
     // MARK: CPU — delta between consecutive host_processor_info samples

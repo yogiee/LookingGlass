@@ -1,6 +1,15 @@
 import SwiftUI
 import AppKit
 
+/// Shared edges of the floating chrome. The sidebar's top lines up with the chat's
+/// top pill and its bottom with the composer, so all three sit between the same two
+/// lines (WORKSPACE/mockups/chat-pill-bar.html, A5). Equal top and bottom: 14 pt at
+/// the top read as cramped against the window edge next to a 30 pt bottom.
+enum ChromeInsets {
+    static let top: CGFloat = 30
+    static let bottom: CGFloat = 30
+}
+
 // NSVisualEffectView with .behindWindow blending — the only way to get true
 // frosted-desktop blur in SwiftUI. SwiftUI materials alone can't reach outside
 // the window frame to sample the desktop.
@@ -16,6 +25,27 @@ struct VibrancyBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.appearance = nsAppearance(for: colorScheme)
+    }
+}
+
+/// AppKit Liquid Glass behind the whole window. Stock glass follows System Settings →
+/// Appearance (Clear / Tinted) and Reduce Transparency on its own — the same reason
+/// IPMSGX's glass tracks those settings with no code of its own. A trial against the
+/// frosted backdrop (Settings → Style → Window Backdrop): Clear may prove too
+/// see-through behind long text.
+struct GlassBackdrop: NSViewRepresentable {
+    let colorScheme: ColorScheme?
+
+    func makeNSView(context: Context) -> NSGlassEffectView {
+        let view = NSGlassEffectView()
+        view.style = .regular
+        view.cornerRadius = 0          // the window's own corner mask does the rounding
+        view.contentView = NSView()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSGlassEffectView, context: Context) {
         nsView.appearance = nsAppearance(for: colorScheme)
     }
 }
@@ -93,6 +123,8 @@ struct RootView: View {
     @AppStorage("fontSize")         private var fontSize         = 14.0
     @AppStorage("lineHeight")       private var lineHeight       = 1.2
     @AppStorage("ollamaHost")       private var ollamaHost       = "http://localhost:11434"
+    @AppStorage("windowBackdrop")   private var windowBackdropRaw = WindowBackdrop.liquidGlass.rawValue
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var sidebarVisible = true
 
     @StateObject private var systemMonitor = SystemMonitor()
@@ -113,11 +145,19 @@ struct RootView: View {
         preferredColorScheme ?? systemColorScheme
     }
 
-    // Glass is the only background: frosted desktop blur + a dark tint for readability.
     @ViewBuilder
     private var backgroundLayer: some View {
-        VibrancyBackground(colorScheme: preferredColorScheme)
-        Color.black.opacity(activeColorScheme == .dark ? 0.35 : 0.08)
+        switch WindowBackdrop(rawValue: windowBackdropRaw) ?? .liquidGlass {
+        case .liquidGlass:
+            GlassBackdrop(colorScheme: preferredColorScheme)
+        case .frosted:
+            // Frosted desktop blur + a dark tint for readability. No tint under Reduce
+            // Transparency: AppKit already makes the vibrancy view opaque there.
+            VibrancyBackground(colorScheme: preferredColorScheme)
+            if !reduceTransparency {
+                Color.black.opacity(activeColorScheme == .dark ? 0.35 : 0.08)
+            }
+        }
     }
 
     var body: some View {
@@ -140,13 +180,11 @@ struct RootView: View {
                     .environmentObject(modelCatalog)
                     .frame(width: 380)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    // Hairline border so the panel reads against the frosted backdrop
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5)
-                    )
-                    .padding(.top, 50)
-                    .padding(.bottom, 30)
+                    // System glass, not a material: it follows the Liquid Glass and
+                    // Reduce Transparency settings, and draws its own rim.
+                    .glassEffect(.regular, in: .rect(cornerRadius: 14, style: .continuous))
+                    .padding(.top, ChromeInsets.top)
+                    .padding(.bottom, ChromeInsets.bottom)
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
 
@@ -156,9 +194,11 @@ struct RootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // Title-bar strip: drag to move, double-click to zoom (clear of the traffic lights).
+        // Only as tall as the gap above the sidebar and the chat's top pill, so it never
+        // sits over their controls; the pill moves the window itself.
         .overlay(alignment: .top) {
             TitleBarBehavior()
-                .frame(height: 28)
+                .frame(height: ChromeInsets.top)
                 .padding(.leading, 72)
         }
         .blur(radius: reportPanel.isVisible ? 6 : 0, opaque: false)
@@ -216,6 +256,13 @@ struct RootView: View {
         .onChange(of: sidecar.status) { _, newStatus in
             if newStatus == .running {
                 Task { await modelCatalog.refresh(ollamaHost: ollamaHost) }
+            }
+        }
+        // The top pill's project name: show that project's chats in the sidebar.
+        .onReceive(NotificationCenter.default.publisher(for: .revealChatsSidebar)) { _ in
+            railSelectionRaw = RailTab.chats.rawValue
+            if !sidebarVisible {
+                withAnimation(.spring(duration: 0.22)) { sidebarVisible = true }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openSettings)) { _ in

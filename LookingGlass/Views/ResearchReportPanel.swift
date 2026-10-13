@@ -17,8 +17,17 @@ struct ResearchReportPanel: View {
     let onClose: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject private var speech = SpeechOutputService.shared
+    @AppStorage(SpeechOutputService.Keys.enabled) private var voiceEnabled = true
 
     @State private var content: String = ""
+    /// This viewer's reading pace, as a multiple of natural pace. Seeded from the global Settings rate
+    /// every time the panel opens and never written back: it's a temporary override for this session of
+    /// the viewer only (Yogi, 2026-09-21). Applied LIVE — a change that waited for the next sentence would
+    /// read as "the slider did nothing" in a long one.
+    @State private var readRate: Double = SpeechOutputService.shared.rateMultiple
+    /// Stable per panel, so play/stop tracks this report and not whatever else is speaking.
+    @State private var readID = "report-\(UUID().uuidString)"
     /// Web page finished loading (fires fast — layout continues off-process).
     @State private var pageLoaded = false
     /// Delayed flag so content only reveals after the slide-in transition settles —
@@ -58,6 +67,10 @@ struct ResearchReportPanel: View {
             }
         }
         .ignoresSafeArea()
+        // The pace override lives and dies with this viewer; so does the reading it started.
+        .onDisappear {
+            if speech.isSpeaking(readID) { speech.stop() }
+        }
         .task {
             loadContent()
             try? await Task.sleep(for: .milliseconds(320))
@@ -73,6 +86,9 @@ struct ResearchReportPanel: View {
                 .font(.system(size: 13))
                 .foregroundStyle(Color.accentColor)
             Spacer()
+            if voiceEnabled {
+                readAloudControls
+            }
             // Export button
             Button {
                 exportReport()
@@ -97,6 +113,39 @@ struct ResearchReportPanel: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    // MARK: Read aloud
+
+    private var isReading: Bool { speech.isSpeaking(readID) }
+
+    private var readAloudControls: some View {
+        HStack(spacing: 8) {
+            Button {
+                speech.toggle(content, id: readID, rate: readRate)
+            } label: {
+                Image(systemName: isReading ? "stop.fill" : "speaker.wave.2")
+                    .font(.system(size: 12))
+                    .foregroundStyle(isReading ? Color.accentColor : .secondary)
+                    .frame(width: 18)
+            }
+            .buttonStyle(.plain)
+            .disabled(content.isEmpty)
+            .help(isReading ? "Stop reading" : "Read this aloud")
+
+            Slider(value: $readRate, in: 0.7...1.3, step: 0.05)
+                .controlSize(.mini)
+                .frame(width: 90)
+                .help("Reading pace for this report only — Settings keeps its own")
+            Text(String(format: "%.2f×", readRate))
+                .font(.system(size: 10))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 34, alignment: .leading)
+        }
+        .onChange(of: readRate) { _, rate in
+            if isReading { speech.setLiveRate(rate) }
+        }
     }
 
     // MARK: Loading

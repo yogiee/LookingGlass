@@ -1,145 +1,137 @@
 import AppKit
-import CoreML
-import Vision
 import CoreImage
-import ImageIO
-import UniformTypeIdentifiers
+import CoreVideo
+import VideoToolbox
 
-/// RealPLKSR 4× super-resolution (Core ML, ANE). The ~30 MB model is downloaded on first use
-/// (Settings → Images) into Application Support and compiled on-device — kept out of the app bundle
-/// so the DMG stays small (Invariant #7). Tier-1: the Upscale button stays disabled until it's ready
-/// and nothing depends on it. Fixed 512→2048 shape → tile the image into 512 blocks, 4× each, stitch.
-/// See WORKSPACE/apple-native/01-imaging-and-vision.md §C. Model: NomosWebPhoto_RealPLKSR
-/// (CC-BY-4.0, Philip Hofmann) — won a multi-image eval over Real-ESRGAN/ESRGAN/Nomos8kSC (more real
-/// detail, respects shallow DoF, no plastic look); shipped with a light 15% Lanczos blend by default.
+/// Apple's 4× super-resolution (`VTSuperResolutionScaler`, VideoToolbox, macOS 26+). The model is part of
+/// macOS — nothing for us to host or download; if it isn't on this Mac yet, Settings → Images asks macOS
+/// for it. Tier-1: the Upscale button stays disabled until it's ready and nothing depends on it.
+///
+/// Chosen over RealPLKSR in the 2026-09-21 bake-off (WORKSPACE/upscale-bakeoff-2026-09-21/): the most
+/// faithful of the candidates (colour drift ΔE 0.22, best PSNR/SSIM) and 0.67 s / ~4 GB for a 1024² →
+/// 4096² image, where RealPLKSR had become 38 s / ~11 GB on macOS 27. It's a little soft, so the review's
+/// Detail slider blends it with a sharpened copy of itself: a light luminance sharpen that brings back
+/// detail without looking artificial (tuned on the bake-off's recovery test).
 @MainActor
 final class SuperResolutionService: ObservableObject {
     static let shared = SuperResolutionService()
     private init() { refresh() }
 
-    enum Status: Equatable { case notInstalled, downloading(Double), compiling, ready, failed(String) }
-    @Published private(set) var status: Status = .notInstalled
+    enum Status: Equatable { case unsupported, needsDownload, downloading(Double), ready, failed(String) }
+    @Published private(set) var status: Status = .needsDownload
 
-    private let assetURL = URL(string: "https://github.com/yogiee/LookingGlass/releases/download/models-v2/RealPLKSR4x.mlmodel")!
-    private let tileIn = 512
-    private let factor = 4
-    private var downloader: ModelDownloader?
+    /// The scaler takes at most 1920 px per side (4× → 7680) and at least 16.
+    static let maxSide = 1920
+    static let minSide = 16
+    /// The sharpen that the Detail slider blends toward (`CISharpenLuminance`): the slider's top end.
+    /// The default position lands on sharpness 1.6 — see `InlineImageView.detailFraction`.
+    nonisolated static let sharpenRadius = 0.75
+    nonisolated static let maxSharpness = 3.0
 
-    private var modelsDir: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("LookingGlass/models", isDirectory: true)
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
-        return base
+    var isReady: Bool { status == .ready }
+
+    func canUpscale(_ size: CGSize) -> Bool {
+        let w = Int(size.width), h = Int(size.height)
+        return w >= Self.minSide && h >= Self.minSide && w <= Self.maxSide && h <= Self.maxSide
     }
-    private var mlmodelURL: URL { modelsDir.appendingPathComponent("RealPLKSR4x.mlmodel") }
-    private var compiledURL: URL { modelsDir.appendingPathComponent("RealPLKSR4x.mlmodelc") }
 
-    var isReady: Bool { FileManager.default.fileExists(atPath: compiledURL.path) }
+    /// Re-read the model's state from macOS (it can arrive on its own, via another app, or after an OS update).
+    func refresh() {
+        guard VTSuperResolutionScalerConfiguration.isSupported else { status = .unsupported; return }
+        if case .downloading = status { return }
+        guard let config = Self.configuration(width: 1024, height: 1024) else { status = .unsupported; return }
+        switch config.configurationModelStatus {
+        case .ready: status = .ready
+        case .downloading: status = .downloading(Double(config.configurationModelPercentageAvailable))
+        default: status = .needsDownload
+        }
+    }
 
-    func refresh() { if isReady, status != .ready { status = .ready } else if !isReady { status = .notInstalled } }
-
-    /// Download + compile the model if it isn't installed yet. Safe to call repeatedly.
+    /// Ask macOS to fetch the model. Only ever from the user's press in Settings.
     func install() async {
-        guard !isReady else { status = .ready; return }
-        let dst = mlmodelURL, compiled = compiledURL
-        do {
-            status = .downloading(0)
-            let dl = ModelDownloader(); downloader = dl
-            try await dl.download(from: assetURL, to: dst) { p in
-                Task { @MainActor in self.status = .downloading(p) }
+        guard let config = Self.configuration(width: 1024, height: 1024) else { status = .unsupported; return }
+        status = .downloading(Double(config.configurationModelPercentageAvailable))
+        let poll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                self?.status = .downloading(Double(config.configurationModelPercentageAvailable))
             }
-            status = .compiling
-            let tmp = try await Task.detached(priority: .userInitiated) { try MLModel.compileModel(at: dst) }.value
-            if FileManager.default.fileExists(atPath: compiled.path) { try? FileManager.default.removeItem(at: compiled) }
-            try FileManager.default.moveItem(at: tmp, to: compiled)
-            status = .ready
+        }
+        defer { poll.cancel() }
+        do {
+            try await config.downloadConfigurationModel()
+            status = config.configurationModelStatus == .ready ? .ready : .needsDownload
         } catch {
-            try? FileManager.default.removeItem(at: dst)
             status = .failed(error.localizedDescription)
         }
-        downloader = nil
     }
 
-    /// Remove the installed model (frees ~67 MB).
-    func remove() {
-        try? FileManager.default.removeItem(at: mlmodelURL)
-        try? FileManager.default.removeItem(at: compiledURL)
-        status = .notInstalled
-    }
-
-    /// 4× upscale of the image at `path`, returned as PNG data (Sendable-safe across the actor
-    /// boundary). Runs off the main thread. nil on failure / not ready.
-    func upscale(path: String) async -> Data? {
+    /// 4× the image at `path`, plus the same result with the full Detail sharpen applied — the two ends
+    /// the review's Detail slider blends between. Runs off the main actor. nil if not ready, the image is
+    /// out of range, or anything fails.
+    func upscale(path: String) async -> (plain: CGImage, sharpened: CGImage)? {
         guard isReady else { return nil }
-        let compiled = compiledURL, tile = tileIn, factor = self.factor
-        return await Task.detached(priority: .userInitiated) {
-            Self.run(path: path, compiledURL: compiled, tile: tile, factor: factor)
-        }.value
+        return await Self.run(path: path)
     }
 
-    /// Tile → Core ML inference → stitch, then encode PNG. Non-overlapping 512 tiles (edge tiles are
-    /// clamped to a full 512 block so the fixed-shape model always gets 512×512); output cropped to
-    /// exactly width×factor.
-    private nonisolated static func run(path: String, compiledURL: URL, tile: Int, factor: Int) -> Data? {
+    // MARK: - Work (off the main actor)
+
+    private nonisolated static let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+    private nonisolated static let context = CIContext(options: [.workingColorSpace: sRGB, .outputColorSpace: sRGB])
+
+    private nonisolated static func configuration(width: Int, height: Int) -> VTSuperResolutionScalerConfiguration? {
+        VTSuperResolutionScalerConfiguration(
+            frameWidth: width, frameHeight: height, scaleFactor: 4, inputType: .image, usePrecomputedFlow: false,
+            qualityPrioritization: .normal, revision: VTSuperResolutionScalerConfiguration.defaultRevision)
+    }
+
+    /// `nonisolated async` runs on the global executor, off the main actor.
+    private nonisolated static func run(path: String) async -> (plain: CGImage, sharpened: CGImage)? {
         guard let src = NSImage(contentsOfFile: path)?.cgImage(forProposedRect: nil, context: nil, hints: nil),
-              src.width >= tile, src.height >= tile,
-              let ml = try? MLModel(contentsOf: compiledURL),
-              let vn = try? VNCoreMLModel(for: ml) else { return nil }
-        let w = src.width, h = src.height, outW = w * factor, outH = h * factor, outTile = tile * factor
-        let cs = CGColorSpace(name: CGColorSpace.sRGB)!
-        guard let ctx = CGContext(data: nil, width: outW, height: outH, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        let ciCtx = CIContext()
-        let cols = Int(ceil(Double(w) / Double(tile))), rows = Int(ceil(Double(h) / Double(tile)))
-        for r in 0..<rows {
-            for c in 0..<cols {
-                let sx = min(c * tile, w - tile), sy = min(r * tile, h - tile)
-                guard let t = src.cropping(to: CGRect(x: sx, y: sy, width: tile, height: tile)) else { continue }
-                let req = VNCoreMLRequest(model: vn); req.imageCropAndScaleOption = .scaleFill
-                guard (try? VNImageRequestHandler(cgImage: t).perform([req])) != nil,
-                      let obs = req.results?.first as? VNPixelBufferObservation,
-                      let up = ciCtx.createCGImage(CIImage(cvPixelBuffer: obs.pixelBuffer),
-                                                   from: CGRect(x: 0, y: 0, width: outTile, height: outTile))
-                else { continue }
-                // CGContext origin is bottom-left; source (sx,sy) is top-left.
-                ctx.draw(up, in: CGRect(x: sx * factor, y: outH - sy * factor - outTile, width: outTile, height: outTile))
-            }
-        }
-        guard let out = ctx.makeImage() else { return nil }
-        let data = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
-        CGImageDestinationAddImage(dest, out, nil)
-        guard CGImageDestinationFinalize(dest) else { return nil }
-        return data as Data
-    }
-}
-
-/// Thin URLSessionDownloadDelegate wrapper: download a file to `destination` with progress.
-private final class ModelDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private var progress: ((Double) -> Void)?
-    private var dest: URL!
-    private var cont: CheckedContinuation<Void, Error>?
-
-    func download(from url: URL, to destination: URL, progress: @escaping (Double) -> Void) async throws {
-        self.progress = progress; self.dest = destination
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-        try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-            self.cont = c
-            session.downloadTask(with: url).resume()
-        }
-    }
-    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didWriteData: Int64,
-                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        if totalBytesExpectedToWrite > 0 { progress?(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)) }
-    }
-    func urlSession(_ s: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+              let config = configuration(width: src.width, height: src.height),
+              let input = pixelBuffer(src.width, src.height, config.sourcePixelBufferAttributes),
+              let output = pixelBuffer(src.width * 4, src.height * 4, config.destinationPixelBufferAttributes)
+        else { return nil }
+        // The scaler takes half-float RGBA; feed it sRGB-encoded values (measurably better than linear light).
+        context.render(CIImage(cgImage: src), to: input,
+                       bounds: CGRect(x: 0, y: 0, width: src.width, height: src.height), colorSpace: sRGB)
+        // One processor per image: a processor whose session has ended can't start another.
+        let processor = VTFrameProcessor()
         do {
-            if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
-            try FileManager.default.moveItem(at: location, to: dest)
-            cont?.resume(); cont = nil
-        } catch { cont?.resume(throwing: error); cont = nil }
+            try processor.startSession(configuration: config)
+            defer { processor.endSession() }
+            guard let from = VTFrameProcessorFrame(buffer: input, presentationTimeStamp: .zero),
+                  let to = VTFrameProcessorFrame(buffer: output, presentationTimeStamp: .zero),
+                  let params = VTSuperResolutionScalerParameters(
+                    sourceFrame: from, previousFrame: nil, previousOutputFrame: nil, opticalFlow: nil,
+                    submissionMode: .random, destinationFrame: to)
+            else { return nil }
+            _ = try await processor.process(parameters: params)
+        } catch {
+            print("[upscale] VTSuperResolutionScaler failed: \(error.localizedDescription)")
+            return nil
+        }
+        let extent = CGRect(x: 0, y: 0, width: src.width * 4, height: src.height * 4)
+        let result = CIImage(cvPixelBuffer: output, options: [.colorSpace: sRGB])
+        guard let plain = context.createCGImage(result, from: extent, format: .RGBA8, colorSpace: sRGB) else { return nil }
+        let sharpen = CIFilter(name: "CISharpenLuminance")!
+        sharpen.setValue(CIImage(cgImage: plain), forKey: kCIInputImageKey)
+        sharpen.setValue(maxSharpness, forKey: kCIInputSharpnessKey)
+        sharpen.setValue(sharpenRadius, forKey: kCIInputRadiusKey)
+        guard let sharp = sharpen.outputImage,
+              let sharpened = context.createCGImage(sharp, from: extent, format: .RGBA8, colorSpace: sRGB)
+        else { return nil }
+        return (plain, sharpened)
     }
-    func urlSession(_ s: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error { cont?.resume(throwing: error); cont = nil }
+
+    private nonisolated static func pixelBuffer(_ width: Int, _ height: Int, _ attributes: [String: Any]) -> CVPixelBuffer? {
+        let declared = attributes[kCVPixelBufferPixelFormatTypeKey as String]
+        guard let format = (declared as? NSNumber) ?? (declared as? [NSNumber])?.first else { return nil }
+        var attrs = attributes
+        attrs[kCVPixelBufferWidthKey as String] = width
+        attrs[kCVPixelBufferHeightKey as String] = height
+        var buffer: CVPixelBuffer?
+        let status = CVPixelBufferCreate(nil, width, height, format.uint32Value, attrs as CFDictionary, &buffer)
+        return status == kCVReturnSuccess ? buffer : nil
     }
 }
