@@ -34,7 +34,11 @@ struct Options {
     var seed: UInt32 = 0
     var steps: Int?
     var inputImage: String?
-    var referenceGrid: ReferenceGrid = .half
+    /// Edits see the input image through this token grid. `.full` keeps it 1:1 with the output; `.half`
+    /// (the coreai-models README example) samples it at a quarter of the tokens, so every edit redraws
+    /// the detail it can't see: softer, drifting framing, compounding over chained edits. Full measured
+    /// 2026-10-13: ~50–65 s and 7.25 GB peak vs ~39 s and 6.92 GB, crisp after two chained edits.
+    var referenceGrid: ReferenceGrid = .full
     var half = false
     var info = false
     var clearCache = false

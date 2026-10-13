@@ -191,7 +191,7 @@ class ImageGenService:
                 args = [str(M.helper_path()), "--model", str(m.path), "--prompt", prompt,
                         "--seed", str(seed), "--output", str(output)]
                 if edit_image is not None:
-                    args += ["--input-image", str(edit_image)]
+                    args += ["--input-image", str(edit_image), "--reference-grid", "full"]
                 result = await _run_helper(args)
                 result.update(seed=seed, freed=freed)
                 return result
