@@ -75,6 +75,9 @@ final class KokoroSpeechBackend: SpeechBackend {
 
     var isInstalled: Bool { status?.tier(.light)?.installed ?? false }
 
+    /// The engine is in memory (loaded and not yet released after idling). For the System panel.
+    var isLoaded: Bool { engine != nil }
+
     // MARK: - Readiness
 
     var readiness: SpeechReadiness {

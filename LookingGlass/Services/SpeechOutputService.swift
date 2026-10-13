@@ -33,6 +33,9 @@ final class SpeechOutputService: ObservableObject {
     /// What AUTO currently means, and why. nil until first resolved.
     @Published private(set) var autoDecision: VoiceTierResolver.Decision?
 
+    /// The LIGHT voice (Kokoro, in this process) is in memory. For the System panel.
+    var isLightVoiceLoaded: Bool { kokoro.isLoaded }
+
     /// Synthetic id for the Settings voice preview.
     static let previewID = "voice-preview"
 

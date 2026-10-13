@@ -24,6 +24,9 @@ struct SystemMonitorPanel: View {
                         value: monitor.gpuPercent.map { String(format: "%.0f%%", $0) } ?? "N/A",
                         fill: (monitor.gpuPercent ?? 0) / 100.0
                     )
+                    if monitor.isNeuralEngineReadable {
+                        neuralEngineCard
+                    }
                     MonitorCard(
                         icon: "memorychip",
                         label: "Memory",
@@ -32,12 +35,66 @@ struct SystemMonitorPanel: View {
                         fill: monitor.ramTotalGB > 0 ? monitor.ramUsedGB / monitor.ramTotalGB : 0
                     )
                     ollamaCard
+                    localModelsCard
                 }
                 .padding(12)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { monitor.ollamaHost = ollamaHost }
+    }
+
+    /// ANE memory traffic, not a utilisation %: macOS doesn't expose one (see `NeuralEngineMonitor`).
+    /// Full bar ≈ 20 GB/s, a little above the ~16 GB/s an Apple Intelligence reply peaks at on an M1 Max.
+    private var neuralEngineCard: some View {
+        let gbps = (monitor.aneBytesPerSec ?? 0) / 1e9
+        return MonitorCard(
+            icon: "brain",
+            label: "Neural Engine",
+            subtitle: "Apple Intelligence · text recognition",
+            value: gbps < 0.05 ? "Idle" : String(format: "%.1f GB/s", gbps),
+            fill: min(1, gbps / 20),
+            warnsWhenHigh: false
+        )
+    }
+
+    /// The models Looking Glass runs itself, beside Ollama's: the image model and the LIGHT voice on Core AI,
+    /// Alice's cloned voice on MLX. Laid out like the Ollama card so the two read as one budget.
+    private var localModelsCard: some View {
+        let models = monitor.localModels
+        let total = monitor.localModelsGB
+        let subtitleText: String = {
+            if models.count > 1 { return "\(models.count) models loaded" }
+            if let m = models.first { return "\(m.name) (\(m.engine))" }
+            return "Nothing loaded"
+        }()
+        return MonitorCard(
+            icon: "square.stack.3d.up",
+            label: "Core AI & MLX",
+            subtitle: subtitleText,
+            value: total > 0 ? String(format: "%.1f GB", total) : "Idle",
+            fill: monitor.ramTotalGB > 0 ? total / monitor.ramTotalGB : 0
+        ) {
+            if models.count > 1 {
+                VStack(spacing: 4) {
+                    ForEach(models) { m in
+                        HStack(spacing: 8) {
+                            Text("\(m.name) (\(m.engine))")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 8)
+                            Text(String(format: "%.1f GB", m.gb))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
     }
 
     private var ollamaCard: some View {
@@ -132,18 +189,21 @@ struct MonitorCard<Footer: View>: View {
     var subtitle: String?
     let value: String
     let fill: Double
+    /// Turn the bar orange/red as it fills. Off for activity meters where full isn't a problem.
+    var warnsWhenHigh: Bool = true
     /// Optional extra rows rendered below the dot-matrix bar (e.g. the Ollama
     /// card's per-model RAM breakdown). Defaults to nothing for the other cards.
     let footer: () -> Footer
 
     init(icon: String, isCustomIcon: Bool = false, label: String, subtitle: String? = nil,
-         value: String, fill: Double, @ViewBuilder footer: @escaping () -> Footer) {
+         value: String, fill: Double, warnsWhenHigh: Bool = true, @ViewBuilder footer: @escaping () -> Footer) {
         self.icon = icon
         self.isCustomIcon = isCustomIcon
         self.label = label
         self.subtitle = subtitle
         self.value = value
         self.fill = fill
+        self.warnsWhenHigh = warnsWhenHigh
         self.footer = footer
     }
 
@@ -199,6 +259,7 @@ struct MonitorCard<Footer: View>: View {
     }
 
     private var barColor: Color {
+        guard warnsWhenHigh else { return Color.accentColor }
         if fill > 0.85 { return .red }
         if fill > 0.65 { return .orange }
         return Color.accentColor
@@ -219,8 +280,8 @@ struct MonitorCard<Footer: View>: View {
 // (CPU/GPU/RAM) — lets them omit the trailing closure and infer Footer == EmptyView.
 extension MonitorCard where Footer == EmptyView {
     init(icon: String, isCustomIcon: Bool = false, label: String, subtitle: String? = nil,
-         value: String, fill: Double) {
+         value: String, fill: Double, warnsWhenHigh: Bool = true) {
         self.init(icon: icon, isCustomIcon: isCustomIcon, label: label, subtitle: subtitle,
-                  value: value, fill: fill, footer: { EmptyView() })
+                  value: value, fill: fill, warnsWhenHigh: warnsWhenHigh, footer: { EmptyView() })
     }
 }
