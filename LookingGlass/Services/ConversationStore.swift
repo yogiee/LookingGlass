@@ -178,6 +178,14 @@ final class ConversationStore: ObservableObject {
         scheduleConversationEmbedding(conversationID)   // title is part of the gist
     }
 
+    /// The stored title, read fresh from the database.
+    func title(_ conversationID: UUID) -> String? {
+        try? dbQueue.read { db in
+            try String.fetchOne(db, sql: "SELECT title FROM conversations WHERE id = ?",
+                                arguments: [conversationID.uuidString])
+        }
+    }
+
     /// The per-chat model override, or nil if the chat follows the global default.
     func conversationModel(_ conversationID: UUID) -> String? {
         do {

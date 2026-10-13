@@ -29,15 +29,18 @@ final class AppleIntelligenceService {
 
     // MARK: - Utilities
 
-    /// Generate a short conversation title from the first user + assistant exchange.
+    /// Generate a short conversation title from a user + assistant exchange, or nil when the exchange has
+    /// no topic to name yet. Asked as plain text, the on-device model invents a topic for a greeting
+    /// ("Hello there" → "Exciting trends in urban planning") and ignores an instruction to decline;
+    /// a guided `hasTopic` field sorted 12/12 greetings from real openers (2026-10-13).
     func generateConversationTitle(userMessage: String, assistantReply: String) async -> String? {
         guard isAvailable else { return nil }
-        let session = LanguageModelSession(
-            instructions: "Generate a short conversation title of 5–7 words. Return only the title, no quotes, no trailing punctuation."
-        )
+        let session = LanguageModelSession(instructions: "Name the topic of this conversation, if it has one yet.")
         let prompt = "User: \(userMessage.prefix(200))\nAssistant: \(assistantReply.prefix(400))"
-        guard let response = try? await session.respond(to: prompt) else { return nil }
-        let title = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let response = try? await session.respond(to: prompt, generating: ConversationTitle.self),
+              response.content.hasTopic else { return nil }
+        let title = response.content.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"“”.")).trimmingCharacters(in: .whitespaces)
         return title.isEmpty ? nil : String(title.prefix(80))
     }
 
@@ -70,4 +73,12 @@ final class AppleIntelligenceService {
         let summary = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
         return summary.isEmpty ? nil : summary
     }
+}
+
+@Generable
+struct ConversationTitle {
+    @Guide(description: "True only if the user has raised a specific subject, task or question. False for greetings, pleasantries and small talk such as hello, good morning or how are you.")
+    var hasTopic: Bool
+    @Guide(description: "A 3 to 7 word title naming that subject, or an empty string when hasTopic is false.")
+    var title: String
 }

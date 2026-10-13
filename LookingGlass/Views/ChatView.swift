@@ -123,16 +123,13 @@ class ChatViewModel: ObservableObject {
         // Setting loadedConversationID *before* activeConversationID means the
         // view's onChange guard treats this as "already loaded" and won't reload.
         let conversationID: UUID
-        let isFirstTurn: Bool
         if let active = loadedConversationID {
             conversationID = active
-            isFirstTurn = false
         } else {
             let newID = store.createConversation(title: Self.deriveTitle(text))
             loadedConversationID = newID
             store.activeConversationID = newID
             conversationID = newID
-            isFirstTurn = true
         }
         store.appendMessage(userMessage, to: conversationID)
 
@@ -140,7 +137,7 @@ class ChatViewModel: ObservableObject {
                 enabledTools: enabledTools, systemPrompt: systemPrompt, userName: userName,
                 mcpHintsEnabled: mcpHintsEnabled, researchMode: researchMode, specialistMode: false,
                 voiceMode: voiceMode,
-                conversationID: conversationID, isFirstTurn: isFirstTurn, titleSeed: text, store: store)
+                conversationID: conversationID, titleSeed: text, store: store)
     }
 
     /// "Consult the big model": re-run the last user turn on the specialist (cloud)
@@ -160,7 +157,7 @@ class ChatViewModel: ObservableObject {
         runTurn(history: history, model: nil, ollamaHost: ollamaHost,
                 enabledTools: enabledTools, systemPrompt: systemPrompt, userName: userName,
                 mcpHintsEnabled: mcpHintsEnabled, researchMode: false, specialistMode: true,
-                conversationID: conversationID, isFirstTurn: false, titleSeed: seed, store: store)
+                conversationID: conversationID, titleSeed: seed, store: store)
     }
 
     /// Append a streaming assistant placeholder, stream the turn from the sidecar, and
@@ -169,7 +166,7 @@ class ChatViewModel: ObservableObject {
                          enabledTools: [String]?, systemPrompt: String?, userName: String?,
                          mcpHintsEnabled: [String: Bool]?, researchMode: Bool, specialistMode: Bool,
                          voiceMode: Bool = false,
-                         conversationID: UUID, isFirstTurn: Bool, titleSeed: String,
+                         conversationID: UUID, titleSeed: String,
                          store: ConversationStore) {
         messages.append(Message(role: .assistant, content: "", isStreaming: true))
         isStreaming = true
@@ -227,15 +224,18 @@ class ChatViewModel: ObservableObject {
                     guard !Task.isCancelled else { break }
                     apply(event)
                 }
-                // After the first assistant reply, replace the derived title with an
-                // FM-generated one — more descriptive than the raw first line of user input.
-                if isFirstTurn, !Task.isCancelled,
-                   let assistantContent = messages.last.map({ $0.role == .assistant ? $0.content : "" }),
-                   !assistantContent.isEmpty {
+                // Replace the derived title (the first line the user typed) with an FM-generated one.
+                // A first exchange that's only a greeting has no topic, so FM returns nil and the next
+                // turns try again, as long as the title is still the derived one: a user rename stops it.
+                if !Task.isCancelled,
+                   let reply = messages.last, reply.role == .assistant, !reply.content.isEmpty,
+                   let firstUser = messages.first(where: { $0.role == .user }),
+                   messages.filter({ $0.role == .user }).count <= Self.titleAttempts,
+                   store.title(conversationID) == Self.deriveTitle(firstUser.content) {
                     // Feed the FM a marker-free prompt — a raw file path can trip its guardrails
                     // (→ nil → no rename, leaving the ugly "[Image: …]" title).
                     if let fmTitle = await AppleIntelligenceService.shared.generateConversationTitle(
-                        userMessage: ImagePathScanner.stripMarkers(titleSeed), assistantReply: assistantContent) {
+                        userMessage: ImagePathScanner.stripMarkers(titleSeed), assistantReply: reply.content) {
                         store.rename(conversationID, to: fmTitle)
                     }
                 }
@@ -250,6 +250,9 @@ class ChatViewModel: ObservableObject {
             }
         }
     }
+
+    /// User turns over which an untitled chat keeps asking for a title (see `runTurn`).
+    private static let titleAttempts = 3
 
     /// Conversation title from the first user message — first line, trimmed, capped. Strips any
     /// `[Image: /path]` markers first so an image-drop chat doesn't title itself with a file path
