@@ -387,6 +387,11 @@ final class SpeechOutputService: ObservableObject {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("LookingGlass/voice", isDirectory: true)
     }
+    static var clipURL: URL { voiceDirectory.appendingPathComponent("alice_reference.wav") }
+    static var transcriptURL: URL { voiceDirectory.appendingPathComponent("alice_reference.txt") }
+    /// A spare copy of Alice's own clip and transcript, so going back to her voice after trying another
+    /// needs no download. The sidecar never reads it.
+    static var aliceCopyDirectory: URL { voiceDirectory.appendingPathComponent("alice", isDirectory: true) }
 
     /// Alice's own voice: the reference clip her QUALITY voice was tuned on (Take 3), and its transcript,
     /// hosted as assets of the project's `voice-v1` GitHub release. Pinned by checksum, so a changed or
@@ -397,44 +402,44 @@ final class SpeechOutputService: ObservableObject {
         "alice_reference.txt": "27669eef1c07c6106884f6b5bb965c5b6ec12ecb64f0a1086d0e03614313e4c0",
     ]
 
-    /// Download Alice's clip and install it exactly as a chosen clip would be. Returns an error, or nil.
-    func downloadAliceClip() async -> String? {
-        let staging = FileManager.default.temporaryDirectory
-            .appendingPathComponent("lg-alice-voice-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: staging) }
-        do {
-            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-            for (name, expected) in Self.aliceClipChecksums {
-                let (data, response) = try await URLSession.shared.data(from: Self.aliceClipBaseURL.appending(path: name))
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                    return "Couldn't download Alice's voice (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))."
-                }
-                let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-                guard digest == expected else {
-                    return "The downloaded voice clip didn't match its checksum, so it wasn't installed."
-                }
-                try data.write(to: staging.appendingPathComponent(name))
-            }
-        } catch {
-            return "Couldn't download Alice's voice: \(error.localizedDescription)"
-        }
-        return await importVoiceClip(from: staging.appendingPathComponent("alice_reference.wav"))
+    /// The clip in use, read from the files themselves so Settings is right even while the sidecar is down.
+    struct VoiceClip: Equatable {
+        /// "Alice's own voice", or the name of the file it was chosen from.
+        let name: String
+        let seconds: Double
+        /// Nil clones the voice alone (timbre); with one, delivery and accent carry over too.
+        let transcript: String?
+        /// Clip AND transcript are Alice's own, so "Use Alice's Voice" has nothing to do.
+        let isAlice: Bool
+        /// Her spare copy is intact, so "Use Alice's Voice" needs no download.
+        let aliceSaved: Bool
     }
 
-    /// Install a reference clip and its transcript as Alice's voice.
-    ///
-    /// The clip and transcript are a PAIR: cloning treats the clip as the opening of a continuation, so a
-    /// transcript that runs past the audio makes the model speak the missing words first. The transcript
-    /// must be a `.txt` beside the `.wav` with the same name. Returns an error message, or nil on success.
+    @Published private(set) var voiceClip: VoiceClip?
+
+    private static let clipNameKey = "ttsVoiceClipName"
+
+    func refreshVoiceClip() {
+        guard let file = try? AVAudioFile(forReading: Self.clipURL) else {
+            voiceClip = nil
+            return
+        }
+        let transcript = (try? String(contentsOf: Self.transcriptURL, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let clipIsAlice = Self.isAlice(Self.clipURL)
+        voiceClip = VoiceClip(
+            name: clipIsAlice ? "Alice's own voice"
+                : UserDefaults.standard.string(forKey: Self.clipNameKey) ?? "Custom clip",
+            seconds: Double(file.length) / file.fileFormat.sampleRate,
+            transcript: transcript?.isEmpty == false ? transcript : nil,
+            isAlice: clipIsAlice && Self.isAlice(Self.transcriptURL),
+            aliceSaved: Self.aliceCopyIsIntact)
+    }
+
+    /// Install a reference clip as Alice's voice. Any transcript is removed with the old clip: paired with a
+    /// new clip, a stale one is exactly the mismatch that makes the model speak words that aren't there.
+    /// Add the new clip's transcript afterwards, if it has one. Returns an error message, or nil on success.
     func importVoiceClip(from wav: URL) async -> String? {
-        let transcript = wav.deletingPathExtension().appendingPathExtension("txt")
-        guard FileManager.default.fileExists(atPath: transcript.path) else {
-            return "Put the clip's exact transcript beside it as \(transcript.lastPathComponent)."
-        }
-        guard let text = try? String(contentsOf: transcript, encoding: .utf8),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return "\(transcript.lastPathComponent) is empty."
-        }
         guard let file = try? AVAudioFile(forReading: wav) else { return "That file isn't readable audio." }
         let format = file.fileFormat
         guard format.sampleRate == 24_000, format.channelCount == 1,
@@ -445,23 +450,131 @@ final class SpeechOutputService: ObservableObject {
         guard (5...30).contains(seconds) else {
             return String(format: "The clip is %.1f s — cloning wants roughly 8–20 s of clean speech.", seconds)
         }
-
-        let dir = Self.voiceDirectory
         do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            for (source, name) in [(wav, "alice_reference.wav"), (transcript, "alice_reference.txt")] {
-                let target = dir.appendingPathComponent(name)
-                if FileManager.default.fileExists(atPath: target.path) {
-                    try FileManager.default.removeItem(at: target)
-                }
-                try FileManager.default.copyItem(at: source, to: target)
-            }
+            try keepAliceCopy()
+            try Self.install(wav, as: Self.clipURL)
+            try Self.remove(Self.transcriptURL)
         } catch {
             return "Couldn't install the clip: \(error.localizedDescription)"
         }
-        // A loaded model holds the old clip; drop it so the next reading clones the new one.
+        UserDefaults.standard.set(wav.lastPathComponent, forKey: Self.clipNameKey)
+        return await voiceClipChanged()
+    }
+
+    /// Add the clip's transcript. It must match the clip word for word: cloning treats the clip as the
+    /// opening of a continuation, so a transcript that runs past the audio makes the model speak the missing
+    /// words first. Best for a clip in the language Alice speaks; for one in another language, leave it out.
+    func importVoiceTranscript(from txt: URL) async -> String? {
+        guard FileManager.default.fileExists(atPath: Self.clipURL.path) else { return "Choose a clip first." }
+        guard let text = try? String(contentsOf: txt, encoding: .utf8) else {
+            return "\(txt.lastPathComponent) isn't readable UTF-8 text."
+        }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "\(txt.lastPathComponent) is empty."
+        }
+        do {
+            try keepAliceCopy()
+            try Self.install(txt, as: Self.transcriptURL)
+        } catch {
+            return "Couldn't install the transcript: \(error.localizedDescription)"
+        }
+        return await voiceClipChanged()
+    }
+
+    /// Clone the clip's voice alone, without its transcript.
+    func removeVoiceTranscript() async -> String? {
+        do {
+            try keepAliceCopy()
+            try Self.remove(Self.transcriptURL)
+        } catch {
+            return "Couldn't remove the transcript: \(error.localizedDescription)"
+        }
+        return await voiceClipChanged()
+    }
+
+    /// Put Alice's own clip and transcript back: from her spare copy when it's intact, otherwise downloaded
+    /// from the release (which refreshes the copy). Returns an error message, or nil on success.
+    func useAliceVoice() async -> String? {
+        if !Self.aliceCopyIsIntact, let error = await downloadAliceCopy() { return error }
+        let copy = Self.aliceCopyDirectory
+        do {
+            try Self.install(copy.appendingPathComponent("alice_reference.wav"), as: Self.clipURL)
+            try Self.install(copy.appendingPathComponent("alice_reference.txt"), as: Self.transcriptURL)
+        } catch {
+            return "Couldn't install Alice's voice: \(error.localizedDescription)"
+        }
+        UserDefaults.standard.removeObject(forKey: Self.clipNameKey)
+        return await voiceClipChanged()
+    }
+
+    /// Fetch Alice's clip and transcript into her spare copy, verifying both before either is kept.
+    private func downloadAliceCopy() async -> String? {
+        let staging = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lg-alice-voice-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        do {
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            for (name, expected) in Self.aliceClipChecksums {
+                let (data, response) = try await URLSession.shared.data(from: Self.aliceClipBaseURL.appending(path: name))
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                    return "Couldn't download Alice's voice (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))."
+                }
+                guard Self.sha256(data) == expected else {
+                    return "The downloaded voice clip didn't match its checksum, so it wasn't installed."
+                }
+                try data.write(to: staging.appendingPathComponent(name))
+            }
+            try FileManager.default.createDirectory(at: Self.aliceCopyDirectory, withIntermediateDirectories: true)
+            for name in Self.aliceClipChecksums.keys {
+                try Self.install(staging.appendingPathComponent(name), as: Self.aliceCopyDirectory.appendingPathComponent(name))
+            }
+        } catch {
+            return "Couldn't download Alice's voice: \(error.localizedDescription)"
+        }
+        return nil
+    }
+
+    /// Before anything overwrites the clip in use: if it is Alice's own and her spare copy is missing, save
+    /// it, so a later "Use Alice's Voice" is a copy rather than a download.
+    private func keepAliceCopy() throws {
+        guard !Self.aliceCopyIsIntact, Self.isAlice(Self.clipURL), Self.isAlice(Self.transcriptURL) else { return }
+        try FileManager.default.createDirectory(at: Self.aliceCopyDirectory, withIntermediateDirectories: true)
+        try Self.install(Self.clipURL, as: Self.aliceCopyDirectory.appendingPathComponent("alice_reference.wav"))
+        try Self.install(Self.transcriptURL, as: Self.aliceCopyDirectory.appendingPathComponent("alice_reference.txt"))
+    }
+
+    /// A loaded model holds the old clip; drop it so the next reading clones the new one.
+    private func voiceClipChanged() async -> String? {
+        refreshVoiceClip()
         await client.unload()
         await refresh()
         return nil
+    }
+
+    private static var aliceCopyIsIntact: Bool {
+        aliceClipChecksums.keys.allSatisfy { isAlice(aliceCopyDirectory.appendingPathComponent($0)) }
+    }
+
+    /// Whether the file is byte-for-byte Alice's own clip or transcript (matched by its published name).
+    private static func isAlice(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        guard let expected = aliceClipChecksums[name], let data = try? Data(contentsOf: url) else { return false }
+        return sha256(data) == expected
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func install(_ source: URL, as target: URL) throws {
+        // Choosing the file already in use would otherwise delete it before copying it onto itself.
+        guard source.standardizedFileURL != target.standardizedFileURL else { return }
+        try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try remove(target)
+        try FileManager.default.copyItem(at: source, to: target)
+    }
+
+    private static func remove(_ url: URL) throws {
+        if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
     }
 }

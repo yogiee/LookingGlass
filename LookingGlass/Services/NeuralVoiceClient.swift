@@ -7,6 +7,9 @@ import Foundation
 struct NeuralVoiceStatus: Decodable, Equatable, Sendable {
     struct Reference: Decodable, Equatable, Sendable {
         let present: Bool
+        /// Whether the clip has a transcript. With one, cloning copies delivery and accent; without,
+        /// only the speaker's timbre.
+        let transcript: Bool
         let audio: String
         let text: String
     }
