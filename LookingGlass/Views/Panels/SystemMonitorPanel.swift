@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SystemMonitorPanel: View {
     @EnvironmentObject private var monitor: SystemMonitor
+    @EnvironmentObject private var sidecar: SidecarProcess
     @AppStorage("ollamaHost") private var ollamaHost = "http://localhost:11434"
 
     var body: some View {
@@ -100,7 +101,13 @@ struct SystemMonitorPanel: View {
     private var ollamaCard: some View {
         let vramFill = monitor.ramTotalGB > 0 ? monitor.ollamaVRAMGB / monitor.ramTotalGB : 0
         let models = monitor.ollamaModels
+        // This card's health check goes through the sidecar, so a dead sidecar would otherwise read as Ollama being down.
+        var sidecarFailure: String? {
+            if case .failed(let reason) = sidecar.status { return reason }
+            return nil
+        }
         let valueText: String = {
+            if sidecarFailure != nil { return "Sidecar down" }
             if monitor.ollamaStatus == "Offline" { return "Offline" }
             if monitor.ollamaVRAMGB > 0 { return String(format: "%.1f GB VRAM", monitor.ollamaVRAMGB) }
             return monitor.ollamaStatus
@@ -108,6 +115,7 @@ struct SystemMonitorPanel: View {
         // One model → show its name (as before). Multiple → "N models running",
         // with the per-model breakdown listed below the bar.
         let subtitleText: String? = {
+            if let sidecarFailure { return sidecarFailure }
             if models.count > 1 { return "\(models.count) models running" }
             return monitor.ollamaModel
         }()

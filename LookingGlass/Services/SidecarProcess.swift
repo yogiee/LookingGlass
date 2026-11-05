@@ -60,11 +60,21 @@ class SidecarProcess: ObservableObject {
             }
         }
 
-        proc.terminationHandler = { [weak self] _ in
+        proc.terminationHandler = { [weak self] finished in
+            let id = ObjectIdentifier(finished)
+            let code = finished.terminationStatus
+            let wasSignal = finished.terminationReason == .uncaughtSignal
             Task { @MainActor [weak self] in
-                self?.process = nil
-                if self?.status == .running || self?.status == .starting {
-                    self?.status = .stopped
+                // Ignore a process we've already moved on from: restart() starts the new sidecar before the old
+                // one's exit reaches us, and this must not clear or fail the new one.
+                guard let self, self.process.map(ObjectIdentifier.init) == id else { return }
+                self.process = nil
+                if self.status == .starting {
+                    // It will never answer /health, so say so now instead of polling out the full 30 seconds.
+                    self.healthTask?.cancel()
+                    self.status = .failed("Exited at launch (\(wasSignal ? "signal" : "code") \(code))")
+                } else if self.status == .running {
+                    self.status = .stopped
                 }
             }
         }
