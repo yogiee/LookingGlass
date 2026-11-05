@@ -44,7 +44,7 @@ It's a two-process app: a native SwiftUI window owns the experience, and a local
 
 - **macOS 27+** on **Apple Silicon**
 - [Ollama](https://ollama.com) installed and running (`ollama serve` — the official app, not the Homebrew bottle)
-- To build from source: [Homebrew](https://brew.sh) Python 3.14 (the app embeds its own venv, built from the Homebrew interpreter)
+- To build from source: Xcode command-line tools. The build downloads the standalone Python 3.14 that the app ships with (`scripts/python-runtime.sh`), so no Python install is needed to build or run
 
 ## Install
 
@@ -86,7 +86,7 @@ Extra local model tools (vision, OCR, code, embeddings) are available from the o
 # Run in development (bare executable, sidecar auto-launched)
 swift run
 
-# Or build a distributable .app with an embedded sidecar venv
+# Or build a distributable .app with the sidecar and its own Python embedded
 ./scripts/build-app.sh debug      # → build/LookingGlass.app
 ./scripts/build-app.sh release    # → build/LookingGlass.app + signed DMG
 ```
@@ -94,7 +94,8 @@ swift run
 The sidecar can also run on its own:
 
 ```bash
-cd sidecar && pip install -r requirements.txt && python main.py
+"$(./scripts/python-runtime.sh)/bin/python3" -m venv sidecar/.venv   # the same Python the app ships
+cd sidecar && .venv/bin/pip install -r requirements.txt && .venv/bin/python main.py
 curl http://localhost:8765/health
 ```
 

@@ -6,6 +6,7 @@ DerivedData/
 
 # Python sidecar
 sidecar/.venv/
+.python-runtime/
 **/__pycache__/
 *.pyc
 *.pyo

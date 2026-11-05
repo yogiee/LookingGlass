@@ -44,7 +44,7 @@ class SidecarProcess: ObservableObject {
         proc.currentDirectoryURL = URL(fileURLWithPath: sidecarDir)
         if AppEnvironment.isBundledApp {
             // Inside the .app the sidecar's folder is part of the signed bundle: a __pycache__ written there
-            // invalidates the app's code signature. The venv's packages are precompiled at build time.
+            // invalidates the app's code signature. Python's own files are precompiled at build time.
             var env = ProcessInfo.processInfo.environment
             env["PYTHONDONTWRITEBYTECODE"] = "1"
             proc.environment = env
@@ -199,7 +199,13 @@ class SidecarProcess: ObservableObject {
     }
 
     private func resolvePython(sidecarDir: String) -> String {
-        // Prefer virtual environment
+        // Shipped .app: its own Python, beside the sidecar. No fallback from here: another Python on the machine
+        // wouldn't have the sidecar's packages, so a damaged bundle should fail plainly.
+        let embedded = (sidecarDir as NSString).deletingLastPathComponent + "/python/bin/python3"
+        if AppEnvironment.isBundledApp || FileManager.default.fileExists(atPath: embedded) {
+            return embedded
+        }
+        // Development (`swift run`): prefer the virtual environment
         let venvPython = sidecarDir + "/.venv/bin/python3"
         if FileManager.default.fileExists(atPath: venvPython) {
             return venvPython

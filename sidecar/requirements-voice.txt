@@ -3,7 +3,7 @@
 # it is ~540 MB, and every app update would otherwise re-ship it). See sidecar/tts/runtime.py.
 #
 # Exact pins, installed with --no-deps: these are ONLY the packages the base sidecar (requirements.txt) doesn't
-# already have. Shared dependencies come from the base venv, so the two never disagree on versions.
+# already have. Shared dependencies come from the base sidecar, so the two never disagree on versions.
 #
 # Regenerate after changing mlx-audio's pin: build a venv from requirements.txt, another from requirements.txt +
 # the new mlx-audio, and list the packages (with versions) that only the second one has.
