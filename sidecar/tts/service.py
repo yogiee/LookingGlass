@@ -11,8 +11,11 @@ Shape of the thing:
 - **Streaming, always.** `streaming_interval=0.5` is not a latency nicety — it is the memory fix. The
   non-streaming path's peak grows with the text (4.2 → 9.9 GB for 2 → 780 chars on 1.7B); streaming
   holds it flat, and 0.5 s is lower than the library's 2.0 s default on BOTH memory and first audio.
-- **Cloned, never designed.** Alice is a reference clip + its transcript. VoiceDesign re-rolls the speaker
-  every call; Base + a fixed clip is the same person every time (speaker cosine ~0.997 across tiers).
+- **Cloned, never designed.** Alice is a reference clip, plus its transcript when it has one. VoiceDesign
+  re-rolls the speaker every call; Base + a fixed clip is the same person every time (speaker cosine
+  ~0.997 across tiers). With a transcript the clip is a spoken prefix (ICL): delivery and accent carry
+  over. Without one only a speaker embedding is taken — timbre, not delivery — which suits a clip in
+  another language: a Japanese clip + Japanese transcript gave an unstable, flip-flopping speaker.
 - **Pre-emptive.** Only one voice at a time. A new request cancels the one in flight; the old producer
   notices between codec chunks (≤ one `streaming_interval` of audio) and stops.
 - **Kept warm, then released.** The model stays loaded for `KEEP_ALIVE_S` after last use, like Ollama's
@@ -48,6 +51,10 @@ SAMPLE_RATE = 24_000
 # Alice's signature register — was the one register whose takes differed, so keep it above zero.
 TEMPERATURE = 0.3
 STREAMING_INTERVAL = 0.5
+# mlx_audio already lifts ICL to 1.5 to stop code degeneration, but leaves clip-only (no transcript) at
+# 1.05 — where it fails to stop: three short lines rendered 340 s of near-silence. 1.5 cures it and is a
+# no-op for ICL, so both modes get it (gotcha_qwen_xvector_runaway_rep_penalty).
+REPETITION_PENALTY = 1.5
 KEEP_ALIVE_S = 600
 
 
@@ -57,6 +64,15 @@ class VoiceError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+def _reference_text() -> str | None:
+    """The clip's transcript, or None to clone from the clip alone (timbre only). A missing or blank
+    file both mean clip-only — the app removes a stale transcript when a clip is imported without one."""
+    try:
+        return T.REFERENCE_TEXT.read_text(encoding="utf-8").strip() or None
+    except FileNotFoundError:
+        return None
 
 
 @dataclass
@@ -116,7 +132,8 @@ class VoiceService:
             "available": ok,
             "unavailable_reason": why,
             "reference": {
-                "present": T.REFERENCE_AUDIO.exists() and T.REFERENCE_TEXT.exists(),
+                "present": T.REFERENCE_AUDIO.exists(),
+                "transcript": _reference_text() is not None,
                 "audio": str(T.REFERENCE_AUDIO),
                 "text": str(T.REFERENCE_TEXT),
             },
@@ -145,19 +162,14 @@ class VoiceService:
         import mlx.core as mx
         import numpy as np
 
-        if not (T.REFERENCE_AUDIO.exists() and T.REFERENCE_TEXT.exists()):
-            raise VoiceError("no_reference",
-                             f"Alice's voice clip is missing — expected {T.REFERENCE_AUDIO} and "
-                             f"{T.REFERENCE_TEXT.name} beside it.")
+        if not T.REFERENCE_AUDIO.exists():
+            raise VoiceError("no_reference", f"Alice's voice clip is missing — expected {T.REFERENCE_AUDIO}.")
         with wave.open(str(T.REFERENCE_AUDIO), "rb") as w:
             if w.getframerate() != SAMPLE_RATE or w.getnchannels() != 1 or w.getsampwidth() != 2:
                 raise VoiceError("bad_reference",
                                  "The voice clip must be 24 kHz mono 16-bit WAV.")
             pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768
-        text = T.REFERENCE_TEXT.read_text(encoding="utf-8").strip()
-        if not text:
-            raise VoiceError("bad_reference", "The voice clip's transcript is empty.")
-        return mx.array(pcm), text
+        return mx.array(pcm), _reference_text()
 
     def _load_sync(self, tier_id: str) -> dict:
         import mlx.core as mx
@@ -182,7 +194,7 @@ class VoiceService:
         for _ in self._model.generate(text="Hello.", ref_audio=self._reference,
                                       ref_text=self._reference_text, lang_code="english",
                                       stream=True, streaming_interval=STREAMING_INTERVAL,
-                                      temperature=TEMPERATURE):
+                                      temperature=TEMPERATURE, repetition_penalty=REPETITION_PENALTY):
             pass
         self._resident_gb = mx.get_active_memory() / 1e9
         return {"tier": tier_id, "load_s": round(load_s, 2),
@@ -214,6 +226,7 @@ class VoiceService:
                 text=piece, ref_audio=self._reference, ref_text=self._reference_text,
                 lang_code=language_for(piece), stream=True,
                 streaming_interval=STREAMING_INTERVAL, temperature=TEMPERATURE,
+                repetition_penalty=REPETITION_PENALTY,
             ):
                 if job.cancelled.is_set():
                     return

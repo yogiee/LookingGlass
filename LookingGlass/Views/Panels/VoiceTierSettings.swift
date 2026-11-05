@@ -17,6 +17,7 @@ struct VoiceTierSettings: View {
     @State private var message: String?
     @State private var busy: VoiceTier?
     @State private var showingClipImporter = false
+    @State private var clipImportKind = ClipImportKind.clip
     @State private var engineBusy = false
     @State private var clipBusy = false
 
@@ -285,14 +286,17 @@ struct VoiceTierSettings: View {
 
     // MARK: - Alice's voice clip
 
+    /// Clip and transcript are chosen separately: the transcript is optional, and a clip in another
+    /// language clones better without one.
     private var clipRow: some View {
-        let present = speech.neuralStatus?.reference.present ?? false
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack {
+        let clip = speech.voiceClip
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
                 Text("Alice's voice clip")
                 Spacer()
-                if present {
-                    Label("Installed", systemImage: "checkmark.circle.fill")
+                if let clip {
+                    Label(clip.transcript == nil ? "Voice only" : "With transcript",
+                          systemImage: "checkmark.circle.fill")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 } else {
@@ -300,33 +304,95 @@ struct VoiceTierSettings: View {
                         .font(.system(size: 11))
                         .foregroundStyle(.orange)
                 }
-                Button(present ? "Use Alice's voice" : "Download Alice's voice") {
-                    clipBusy = true
-                    message = nil
-                    Task {
-                        message = await speech.downloadAliceClip()
-                        clipBusy = false
-                    }
-                }
-                .disabled(clipBusy)
-                .help("Alice's own reference clip (under 1 MB), from the Looking Glass releases on GitHub.")
-                Button(present ? "Replace…" : "Choose…") { showingClipImporter = true }
-                    .disabled(clipBusy)
             }
-            Text("QUALITY and QUALITY+ clone this clip. Download Alice's own voice, or choose your own: a 24 kHz "
-                 + "mono WAV, with its exact transcript beside it as a .txt of the same name — the two must match "
-                 + "word for word.")
+
+            clipLine("Clip", clip.map { String(format: "%@ · %.1f s", $0.name, $0.seconds) }
+                        ?? "None yet — QUALITY and QUALITY+ need one to speak.") {
+                Button(clip == nil ? "Choose Clip…" : "Replace Clip…") { chooseFile(.clip) }
+            }
+
+            clipLine("Transcript (optional)", transcriptDetail(clip)) {
+                if clip?.transcript != nil {
+                    Button("Remove") { runClip { await speech.removeVoiceTranscript() } }
+                }
+                Button(clip?.transcript == nil ? "Choose Transcript…" : "Replace…") { chooseFile(.transcript) }
+                    .disabled(clip == nil)
+            }
+
+            clipLine("Alice's own voice", aliceDetail(clip)) {
+                Button("Use Alice's Voice") { runClip { await speech.useAliceVoice() } }
+                    .disabled(clip?.isAlice == true)
+                    .help("Sets her clip and its transcript together.")
+            }
+
+            Text("QUALITY and QUALITY+ clone the clip: a 24 kHz, mono, 16-bit WAV of 5–30 s. A transcript is "
+                 + "optional — for an English clip, its exact words carry the speaker's delivery and accent too; "
+                 + "for a clip in another language, leave it out. Choosing a new clip clears the old transcript.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .fileImporter(isPresented: $showingClipImporter, allowedContentTypes: [.wav]) { result in
+        .disabled(clipBusy)
+        .onAppear { speech.refreshVoiceClip() }
+        .fileImporter(isPresented: $showingClipImporter,
+                      allowedContentTypes: clipImportKind == .clip ? [.wav] : [.plainText]) { result in
             guard case .success(let url) = result else { return }
-            Task {
+            let kind = clipImportKind
+            runClip {
                 let scoped = url.startAccessingSecurityScopedResource()
                 defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                message = await speech.importVoiceClip(from: url)
+                return kind == .clip ? await speech.importVoiceClip(from: url)
+                                     : await speech.importVoiceTranscript(from: url)
             }
+        }
+    }
+
+    /// One sub-row of the clip box: what it is and what's set, with its actions on the right.
+    private func clipLine<Actions: View>(_ title: String, _ detail: String,
+                                         @ViewBuilder actions: () -> Actions) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 12, weight: .medium))
+                Text(detail)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+            }
+            Spacer()
+            actions()
+        }
+        .padding(.leading, 12)
+    }
+
+    private func transcriptDetail(_ clip: SpeechOutputService.VoiceClip?) -> String {
+        guard let clip else { return "Choose a clip first." }
+        guard let transcript = clip.transcript else {
+            return "None — clones the voice alone. Best for a clip in another language."
+        }
+        return "“\(transcript)”"
+    }
+
+    private func aliceDetail(_ clip: SpeechOutputService.VoiceClip?) -> String {
+        if clip?.isAlice == true { return "In use." }
+        return clip?.aliceSaved == true
+            ? "Puts back her clip and transcript."
+            : "Puts back her clip and transcript — a small download (under 1 MB) from GitHub."
+    }
+
+    private enum ClipImportKind { case clip, transcript }
+
+    private func chooseFile(_ kind: ClipImportKind) {
+        clipImportKind = kind
+        showingClipImporter = true
+    }
+
+    private func runClip(_ action: @escaping () async -> String?) {
+        clipBusy = true
+        message = nil
+        Task {
+            message = await action()
+            clipBusy = false
         }
     }
 }

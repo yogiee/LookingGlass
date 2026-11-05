@@ -3,9 +3,8 @@
 # Usage: ./scripts/build-app.sh [release|debug]
 #
 # Produces build/LookingGlass.app and (release) build/LookingGlass.dmg.
-# The Python sidecar + a self-contained venv are embedded at
-# Contents/Resources/sidecar so the app runs with no external setup beyond
-# Homebrew Python (for the stdlib) being present.
+# The Python sidecar is embedded at Contents/Resources/sidecar, and a standalone Python with its packages at
+# Contents/Resources/python (see scripts/python-runtime.sh), so the app needs no Python on the machine.
 
 set -euo pipefail
 
@@ -17,21 +16,12 @@ BUILD_DIR="$PROJECT_DIR/build"
 APP_NAME="LookingGlass"          # bundle + binary name (no spaces)
 DISPLAY_NAME="Looking Glass"     # shown in Finder / Dock / menu bar
 BUNDLE_ID="com.yogi.LookingGlass"
-VERSION="0.9.5"
-BUILD_NUMBER="25"
+VERSION="0.9.6"
+BUILD_NUMBER="26"
 
 # Shared EdDSA public key for Sparkle (private key in Keychain, machine-bound).
 SPARKLE_PUBLIC_KEY="${SPARKLE_PUBLIC_KEY:-k47OPDePNJN2Iyiu28Hz73RzNv/GHyryeSPWvGhv1+c=}"
 SUFEED_URL="https://raw.githubusercontent.com/yogiee/LookingGlass/main/appcast.xml"
-
-# Homebrew Python used to create the embedded venv (interpreter is copied via --copies).
-# Pinned to 3.14: Homebrew's bare `python3` moved to 3.15, which MLX (mlx-audio → the
-# QUALITY voice tiers) has no wheels for yet, so pip fails. Unpin once MLX ships 3.15.
-HOST_PYTHON="${HOST_PYTHON:-/opt/homebrew/bin/python3.14}"
-if [ ! -x "$HOST_PYTHON" ]; then
-    echo "ERROR: $HOST_PYTHON not found — brew install python@3.14, or set HOST_PYTHON." >&2
-    exit 1
-fi
 
 echo "=== Building $DISPLAY_NAME ($CONFIG) v$VERSION ==="
 
@@ -86,42 +76,55 @@ else
     echo "  WARNING: resource bundle not found at $RES_BUNDLE"
 fi
 
-# ── 4. Embed Python sidecar + self-contained venv ────────────────────────────
-echo "  [4/8] Embedding sidecar + venv (this pip-installs deps)..."
+# ── 4. Embed Python sidecar + standalone Python ──────────────────────────────
+echo "  [4/8] Embedding sidecar + Python (this pip-installs deps)..."
 SIDECAR_DST="$APP/Contents/Resources/sidecar"
 rsync -a --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
     "$PROJECT_DIR/sidecar/" "$SIDECAR_DST/"
 
-[ -x "$HOST_PYTHON" ] || { echo "ERROR: Homebrew Python not at $HOST_PYTHON (set HOST_PYTHON)"; exit 1; }
-# --copies puts a real python binary in the venv (not a symlink) so it travels.
-"$HOST_PYTHON" -m venv --copies "$SIDECAR_DST/.venv"
-"$SIDECAR_DST/.venv/bin/pip" install -q --upgrade pip
-"$SIDECAR_DST/.venv/bin/pip" install -q -r "$SIDECAR_DST/requirements.txt"
+# No venv: a venv records an absolute path to its base Python, and the app has to keep working wherever it's moved.
+# The packages go straight into the embedded Python. Voice engine wheels install to Application Support at runtime
+# (sidecar/tts/runtime.py) with this same pip, so pip has to stay in the bundle.
+PY_DST="$APP/Contents/Resources/python"
+cp -R "$("$SCRIPT_DIR/python-runtime.sh")" "$PY_DST"
+PY="$PY_DST/bin/python3"
+"$PY" -m pip install -q --disable-pip-version-check -r "$SIDECAR_DST/requirements.txt"
 
-# `venv --copies` bakes the version-PINNED Cellar dylib path into each copied
-# interpreter (e.g. .../Cellar/python@3.14/3.14.5/.../Python). A Homebrew patch
-# bump (3.14.5 → 3.14.6) deletes that exact dir, so the embedded python can no
-# longer load its own runtime → the sidecar never starts → the app shows
-# "Ollama offline". Repoint to the stable unversioned `opt` symlink, which always
-# tracks the current build and is ABI-stable across patch releases.
-# install_name_tool invalidates the code signature, and the step-8 `codesign
-# --deep` does NOT descend into these loose Resources executables — so each
-# interpreter MUST be ad-hoc re-signed right here, or the kernel kills the
-# sidecar on launch (same "Ollama offline" symptom, signature cause).
-VENV_BIN="$SIDECAR_DST/.venv/bin"
-OLD_DYLIB="$(otool -L "$VENV_BIN/python3" 2>/dev/null | awk '/Cellar\/python@/{print $1; exit}')"
-if [ -n "$OLD_DYLIB" ]; then
-    # /opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/... → /opt/homebrew/opt/python@3.14/Frameworks/...
-    NEW_DYLIB="$(printf '%s' "$OLD_DYLIB" | sed -E 's#/Cellar/(python@[0-9.]+)/[^/]+/#/opt/\1/#')"
-    if [ -f "$NEW_DYLIB" ]; then
-        for b in python python3 python3.* ; do
-            [ -f "$VENV_BIN/$b" ] || continue
-            install_name_tool -change "$OLD_DYLIB" "$NEW_DYLIB" "$VENV_BIN/$b" 2>/dev/null || true
-            codesign --force --sign - "$VENV_BIN/$b" 2>/dev/null || true   # re-sign: each is a separate copy
-        done
-        echo "        repointed + re-signed venv interpreters → $NEW_DYLIB (survives brew patch upgrades)"
-    fi
+# Drop what the sidecar never uses: Tk, IDLE, C headers, and libpython (the interpreter is statically linked).
+# The console scripts go too: their shebangs point at this build folder, and the app only ever runs `python -m`.
+PY_LIB="$PY_DST/lib"
+rm -rf "$PY_DST/include" "$PY_DST/share" "$PY_LIB/pkgconfig" "$PY_LIB/libpython3".* \
+    "$PY_LIB"/libtcl* "$PY_LIB"/tcl* "$PY_LIB"/tk* "$PY_LIB"/itcl* "$PY_LIB"/thread* \
+    "$PY_LIB"/python3.*/{idlelib,tkinter,turtledemo,ensurepip,test}
+find "$PY_DST/bin" -mindepth 1 ! -name 'python' ! -name 'python3' ! -name 'python3.*' -delete
+rm -f "$PY_DST"/bin/python3*-config
+
+# Precompile everything. The folder is sealed by the app's signature, so a .pyc written at runtime would break it.
+# unchecked-hash means Python trusts these files outright and never tries to rewrite them, even for pip's runs, which
+# deliberately have bytecode writing switched on for the voice engine (sidecar/tts/runtime.py).
+# -f is essential: compileall skips files that already have a current .pyc, and pip's install has just written
+# timestamp ones. Those go stale when the DMG step's `cp -R` changes the sources' mtimes, then Python rewrites them
+# inside the signed bundle. A debug build never goes through that copy, so only a DMG install shows the problem.
+"$PY" -m compileall -q -f -j 0 --invalidation-mode unchecked-hash "$PY_LIB"/python3.* >/dev/null \
+    || echo "  WARNING: some files did not precompile (usually test fixtures with deliberately bad syntax)"
+"$PY" -I -B -c '
+import pathlib, sys
+pycs = list(pathlib.Path(sys.argv[1]).rglob("*.pyc"))
+bad = [p for p in pycs if int.from_bytes(p.read_bytes()[4:8], "little") != 1]   # flags 1 = hash-based, unchecked
+if bad or not pycs:
+    sys.exit(f"ERROR: {len(bad)} of {len(pycs)} .pyc files are not unchecked-hash, e.g. {bad[:3]}")
+' "$PY_DST" || exit 1
+
+# The whole point of bundling: fail the build if anything still loads from Homebrew, or if a trim went too far.
+HOMEBREW_LINKS="$(find "$PY_DST" -type f \( -name '*.so' -o -name '*.dylib' -o -path '*/bin/python3.*' \) -print0 \
+    | xargs -0 otool -L 2>/dev/null | grep -E '^[[:space:]]+(/opt/homebrew|/usr/local)/' || true)"
+if [ -n "$HOMEBREW_LINKS" ]; then
+    echo "ERROR: the embedded Python still links outside the bundle:" >&2
+    echo "$HOMEBREW_LINKS" >&2
+    exit 1
 fi
+PYTHONDONTWRITEBYTECODE=1 "$PY" -I -c 'import ctypes, ssl, sqlite3, fastapi, uvicorn, mcp, httpx, sse_starlette, ddgs, pypdf' \
+    || { echo "ERROR: the embedded Python can't import the sidecar's packages" >&2; exit 1; }
 
 # ── 5. Info.plist ────────────────────────────────────────────────────────────
 # NOTE ON USAGE STRINGS: macOS kills the app outright — not a denied prompt, a
@@ -193,8 +196,9 @@ echo "  [7/8] Ad-hoc code signing..."
 find "$APP" -name '.DS_Store' -delete
 xattr -cr "$APP"
 codesign --force --sign - --timestamp=none "$APP/Contents/Frameworks/Sparkle.framework"
-# A loose executable isn't reached by --deep: sign the helper explicitly (as with the venv interpreters).
+# Loose executables aren't reached by --deep: sign the helper and the embedded interpreter explicitly.
 codesign --force --sign - --timestamp=none "$APP/Contents/Helpers/lg-imagegen"
+codesign --force --sign - --timestamp=none "$PY_DST"/bin/python3.[0-9]*
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep "$APP" || { echo "  ERROR: code signature invalid — app will crash on launch"; exit 1; }
 

@@ -25,9 +25,11 @@ APP_SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "LookingGlas
 MODELS_DIR = Path(os.environ.get("LG_TTS_MODELS_DIR", APP_SUPPORT_DIR / "models" / "tts"))
 VOICE_DIR = Path(os.environ.get("LG_TTS_VOICE_DIR", APP_SUPPORT_DIR / "voice"))
 
-# Alice's voice: a reference clip and its exact transcript. They are a PAIR — cloning treats the clip as
-# the opening of a continuation, so a transcript that runs past the audio makes the model speak the
-# missing words first (see the gotcha_qwen_icl_reference_transcript_mismatch memory).
+# Alice's voice: a reference clip and, optionally, its exact transcript. With a transcript, cloning treats
+# the clip as the opening of a continuation and copies delivery and accent too — so the two are a PAIR, and
+# a transcript that runs past the audio makes the model speak the missing words first (see the
+# gotcha_qwen_icl_reference_transcript_mismatch memory). Without one, only the speaker's timbre is cloned,
+# which is the better choice for a clip in another language (eval_qwen_cross_lingual_clone_2026_10_14).
 REFERENCE_AUDIO = VOICE_DIR / "alice_reference.wav"
 REFERENCE_TEXT = VOICE_DIR / "alice_reference.txt"
 
