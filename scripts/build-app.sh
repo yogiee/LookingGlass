@@ -102,8 +102,18 @@ rm -f "$PY_DST"/bin/python3*-config
 # Precompile everything. The folder is sealed by the app's signature, so a .pyc written at runtime would break it.
 # unchecked-hash means Python trusts these files outright and never tries to rewrite them, even for pip's runs, which
 # deliberately have bytecode writing switched on for the voice engine (sidecar/tts/runtime.py).
-"$PY" -m compileall -q -j 0 --invalidation-mode unchecked-hash "$PY_LIB"/python3.* >/dev/null \
+# -f is essential: compileall skips files that already have a current .pyc, and pip's install has just written
+# timestamp ones. Those go stale when the DMG step's `cp -R` changes the sources' mtimes, then Python rewrites them
+# inside the signed bundle. A debug build never goes through that copy, so only a DMG install shows the problem.
+"$PY" -m compileall -q -f -j 0 --invalidation-mode unchecked-hash "$PY_LIB"/python3.* >/dev/null \
     || echo "  WARNING: some files did not precompile (usually test fixtures with deliberately bad syntax)"
+"$PY" -I -B -c '
+import pathlib, sys
+pycs = list(pathlib.Path(sys.argv[1]).rglob("*.pyc"))
+bad = [p for p in pycs if int.from_bytes(p.read_bytes()[4:8], "little") != 1]   # flags 1 = hash-based, unchecked
+if bad or not pycs:
+    sys.exit(f"ERROR: {len(bad)} of {len(pycs)} .pyc files are not unchecked-hash, e.g. {bad[:3]}")
+' "$PY_DST" || exit 1
 
 # The whole point of bundling: fail the build if anything still loads from Homebrew, or if a trim went too far.
 HOMEBREW_LINKS="$(find "$PY_DST" -type f \( -name '*.so' -o -name '*.dylib' -o -path '*/bin/python3.*' \) -print0 \
